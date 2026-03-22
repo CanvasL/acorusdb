@@ -3,7 +3,7 @@ mod database;
 mod protocol;
 mod session;
 mod storage_engine;
-mod wal_entry;
+mod wal;
 
 use std::{
     io::Result,

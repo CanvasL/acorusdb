@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use crate::wal_entry::{
+use crate::wal::{
     Wal,
     WalEntry,
 };
