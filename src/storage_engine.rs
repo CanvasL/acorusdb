@@ -19,7 +19,7 @@ impl StorageEngine {
     /// Opening the storage engine by loading the snapshot and replaying the WAL. This should be called during startup to restore the state.
     pub fn open(snapshot_path: &Path, wal_path: &Path) -> Result<Self> {
         let mut snapshot = Snapshot::open(snapshot_path)?;
-        let wal = Wal::open(wal_path)?;
+        let mut wal = Wal::open(wal_path)?;
 
         let mut data = snapshot.load()?;
 
@@ -52,7 +52,7 @@ impl StorageEngine {
         self.apply_wal(entry);
         
         // If the number of entries in the WAL exceeds a certain threshold (e.g., 1000), it will trigger a compaction to save a new snapshot and clear the WAL.
-        if self.wal.count_entries() > self.compact_threshold {
+        if self.wal.entries_len > self.compact_threshold {
             if let Err(err) = self.compact() {
                 error!(error = %err, "failed to compact data");
             }
@@ -75,6 +75,13 @@ impl StorageEngine {
         let entry = WalEntry::Delete { key: key.into() };
         self.wal.append(&entry)?;
         self.apply_wal(entry);
+
+        // If the number of entries in the WAL exceeds a certain threshold (e.g., 1000), it will trigger a compaction to save a new snapshot and clear the WAL.
+        if self.wal.entries_len > self.compact_threshold {
+            if let Err(err) = self.compact() {
+                error!(error = %err, "failed to compact data");
+            }
+        }
 
         Ok(true)
     }

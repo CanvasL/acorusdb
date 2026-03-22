@@ -1,8 +1,10 @@
 use std::{
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Result, Write},
+    io::{BufRead, BufReader, Error, ErrorKind, Result, Write},
     path::{Path, PathBuf},
 };
+
+use tracing::error;
 
 mod wal_prefix {
     pub const SET: &str = "SET";
@@ -12,6 +14,7 @@ mod wal_prefix {
 pub struct Wal {
     path: PathBuf,
     file: File,
+    pub entries_len: usize,
 }
 
 impl Wal {
@@ -25,24 +28,57 @@ impl Wal {
         Ok(Self {
             path: path.to_path_buf(),
             file,
+            entries_len: 0,
         })
     }
 
-    pub fn read_entries(&self) -> Result<Vec<WalEntry>> {
+    pub fn read_entries(&mut self) -> Result<Vec<WalEntry>> {
         let reader = BufReader::new(File::open(&self.path)?);
         let mut entries = Vec::new();
 
+        let file_len = self.file.metadata()?.len();
+
+        let mut line_num = 0;
+        let mut last_pos = 0;
+
         for line in reader.lines() {
+            line_num += 1;
             let line = line?;
+            let current_pos = last_pos + line.len() + 1;
+
             if line.trim().is_empty() {
+                last_pos = current_pos;
                 // skip empty lines
                 continue;
             }
 
             if let Some(entry) = WalEntry::from_line(&line) {
                 entries.push(entry);
-            } 
+            } else {
+                let is_last_line = current_pos as u64 >= file_len;
+
+                if is_last_line {
+                    // if the line is last line and is malformed, we can ignore it since it may be a result of a crash during writing.
+                    // maybe it is because the process crashed before the line was fully written
+                    error!(
+                        line_num,
+                        "ignoring malformed last line in WAL file, likely due to crash during writing"
+                    );
+                    break;
+                } else {
+                    // if the line is not last line and is malformed, we should return an error since it indicates data corruption.
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!(
+                            "Corrupted WAL at line {}: '{}' (not the last line)",
+                            line_num, line
+                        ),
+                    ));
+                }
+            }
         }
+
+        self.entries_len = entries.len();
 
         Ok(entries)
     }
@@ -50,7 +86,11 @@ impl Wal {
     pub fn append(&mut self, entry: &WalEntry) -> Result<()> {
         self.file.write_all(entry.to_line().as_bytes())?;
         self.file.write_all(b"\n")?;
-        self.file.flush()
+        self.file.flush()?;
+
+        self.entries_len += 1;
+
+        Ok(())
     }
 
     pub fn reset(&mut self) -> Result<()> {
@@ -65,14 +105,9 @@ impl Wal {
             .append(true)
             .open(&self.path)?;
 
-        Ok(())
-    }
+        self.entries_len = 0;
 
-    pub fn count_entries(&self) -> usize {
-        match self.read_entries() {
-            Ok(entries) => entries.len(),
-            Err(_) => 0,
-        }
+        Ok(())
     }
 }
 
