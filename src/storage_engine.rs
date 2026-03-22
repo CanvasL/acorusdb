@@ -112,3 +112,177 @@ impl StorageEngine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        io::{ErrorKind, Result},
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::StorageEngine;
+    use crate::wal::WalEntry;
+
+    #[test]
+    fn recovers_value_from_wal_after_restart() -> Result<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine(&paths, usize::MAX)?;
+            engine.set("name", "acorus db")?;
+            assert_eq!(engine.get("name"), Some("acorus db"));
+        }
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("name"), Some("acorus db"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn recovers_delete_from_wal_after_restart() -> Result<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine(&paths, usize::MAX)?;
+            engine.set("name", "fan")?;
+            assert!(engine.delete("name")?);
+        }
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("name"), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_persists_snapshot_and_clears_wal() -> Result<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine(&paths, 0)?;
+            engine.set("color", "blue")?;
+        }
+
+        assert!(paths.snapshot_path.exists());
+        assert_eq!(fs::metadata(&paths.wal_path)?.len(), 0);
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("color"), Some("blue"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn replays_wal_on_top_of_snapshot_during_recovery() -> Result<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine(&paths, 0)?;
+            engine.set("shared", "old")?;
+            engine.set("keep", "yes")?;
+        }
+
+        {
+            let mut engine = open_engine(&paths, usize::MAX)?;
+            engine.set("shared", "new")?;
+            assert!(engine.delete("keep")?);
+            engine.set("overlay", "present")?;
+        }
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("shared"), Some("new"));
+        assert_eq!(engine.get("keep"), None);
+        assert_eq!(engine.get("overlay"), Some("present"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_malformed_last_wal_line_during_recovery() -> Result<()> {
+        let paths = TestPaths::new()?;
+        let valid = WalEntry::Set {
+            key: "name".into(),
+            value: "fan".into(),
+        }
+        .to_line();
+
+        fs::write(&paths.wal_path, format!("{valid}\nBROKEN"))?;
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("name"), Some("fan"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_malformed_non_final_wal_line_during_recovery() -> Result<()> {
+        let paths = TestPaths::new()?;
+        let first = WalEntry::Set {
+            key: "first".into(),
+            value: "1".into(),
+        }
+        .to_line();
+        let last = WalEntry::Set {
+            key: "last".into(),
+            value: "2".into(),
+        }
+        .to_line();
+
+        fs::write(&paths.wal_path, format!("{first}\nBROKEN\n{last}\n"))?;
+
+        let err = open_engine(&paths, usize::MAX)
+            .err()
+            .expect("expected WAL corruption to fail recovery");
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+
+        Ok(())
+    }
+
+    fn open_engine(paths: &TestPaths, wal_compact_threshold_bytes: usize) -> Result<StorageEngine> {
+        StorageEngine::open(
+            paths.snapshot_path.as_path(),
+            paths.wal_path.as_path(),
+            wal_compact_threshold_bytes,
+        )
+    }
+
+    struct TestPaths {
+        root_dir: PathBuf,
+        snapshot_path: PathBuf,
+        wal_path: PathBuf,
+    }
+
+    impl TestPaths {
+        fn new() -> Result<Self> {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let root_dir = std::env::temp_dir().join(format!(
+                "acorusdb-storage-engine-tests-{}-{timestamp}-{sequence}",
+                std::process::id()
+            ));
+
+            fs::create_dir_all(&root_dir)?;
+
+            Ok(Self {
+                snapshot_path: root_dir.join("data.snapshot"),
+                wal_path: root_dir.join("data.wal"),
+                root_dir,
+            })
+        }
+    }
+
+    impl Drop for TestPaths {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root_dir);
+        }
+    }
+}

@@ -8,6 +8,7 @@ use crate::{command::Command, storage_engine::StorageEngine};
 pub enum ExecuteResult {
     Set,
     Get(Option<String>),
+    Exists(bool),
     Delete(bool),
 }
 
@@ -41,6 +42,7 @@ impl Database {
             Command::Get { key } => Ok(ExecuteResult::Get(
                 storage_engine.get(&key).map(str::to_owned),
             )),
+            Command::Exists { key } => Ok(ExecuteResult::Exists(storage_engine.get(&key).is_some())),
             Command::Del { key } => Ok(ExecuteResult::Delete(storage_engine.delete(&key)?)),
         }
     }

@@ -43,9 +43,9 @@ impl Wal {
             line_num += 1;
             let line = line?;
             let current_pos = last_pos + line.len() + 1;
+            last_pos = current_pos;
 
             if line.trim().is_empty() {
-                last_pos = current_pos;
                 // skip empty lines
                 continue;
             }
