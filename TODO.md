@@ -1,0 +1,86 @@
+# TODO
+
+## 当前优先级
+
+- [ ] 把当前存储引擎逐步演进成 mini-LSM，而不是一步跳到完整版 LSM Tree。
+- [ ] 在改存储结构的过程中，保持现有文本协议、WAL、恢复逻辑、tracing 日志和优雅停机语义不退化。
+- [ ] 每次存储层重构前后都继续补测试，不靠手工验证兜底。
+
+## 第一阶段：先把当前引擎整理好
+
+- [ ] 把 [`src/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage_engine.rs) 里的内存结构从 `HashMap` 换成 `BTreeMap`。
+- [ ] 保持当前写路径不变，仍然是 `WAL -> memtable apply`。
+- [ ] 补测试，证明重启后和 compact 后的遍历顺序稳定。
+- [ ] 在引入磁盘有序表之前，先明确并写清楚 delete 的 tombstone 语义。
+
+## 第二阶段：把 snapshot 演进成 SSTable V1
+
+- [ ] 把 [`src/snapshot.rs`](/Users/fan/MyProjects/acorusdb/src/snapshot.rs) 从“整张表序列化”改成“有序、不可变表文件”。
+- [ ] 先定义一个足够简单的 SSTable 文件格式：
+  - [ ] 文件头
+  - [ ] 按 key 排序的记录
+  - [ ] delete 对应的 tombstone 标记
+- [ ] 第一版先保证顺序可读和正确性，不着急做索引。
+- [ ] 补测试覆盖：
+  - [ ] 写出有序表
+  - [ ] 读取有序表
+  - [ ] 正确识别 tombstone
+
+## 第三阶段：引入 memtable flush
+
+- [ ] 在概念和代码层都把当前 snapshot 更明确地转成 SSTable 文件。
+- [ ] 当 memtable 达到阈值时触发 flush。
+- [ ] flush 流程至少包含：
+  - [ ] 写出新的不可变 SSTable
+  - [ ] 同步文件和目录
+  - [ ] reset WAL
+  - [ ] 保证宕机恢复路径仍然正确
+- [ ] 补测试覆盖 `set/delete -> flush -> restart -> recover`。
+
+## 第四阶段：支持多张表的读路径
+
+- [ ] `get` 查询顺序改成：
+  - [ ] 先查 memtable
+  - [ ] 再查最新 SSTable
+  - [ ] 再查更老的 SSTable
+- [ ] 维护表元数据，保证启动时知道有哪些 SSTable。
+- [ ] 第一版查找策略可以先简单，先不要过度优化。
+- [ ] 补多次 flush 后重启恢复的测试。
+
+## 第五阶段：Compaction V1
+
+- [ ] 用 SSTable merge compaction 替代现在“snapshot + 清空 WAL”的 compact 思路。
+- [ ] 第一版只做手动触发或阈值触发，不做后台线程调度。
+- [ ] 支持把新旧 SSTable merge 成一个新表。
+- [ ] 在安全条件下丢弃旧值和无效 tombstone。
+- [ ] 补测试覆盖：
+  - [ ] 多表里重复 key 的覆盖关系
+  - [ ] tombstone 重启后仍然生效
+  - [ ] compact 后只保留最新值
+
+## 第六阶段：元数据与恢复
+
+- [ ] 增加 manifest 或等价元数据文件，用来记录 SSTable 列表。
+- [ ] 启动恢复路径改成：
+  - [ ] 先加载 manifest / 表列表
+  - [ ] 再通过 WAL 回放恢复 memtable
+- [ ] 保证新 SSTable 创建和旧文件替换过程具备 crash safety。
+- [ ] 补 manifest 和 SSTable 损坏场景的恢复测试。
+
+## 第七阶段：可选性能工作
+
+- [ ] 给 SSTable 增加 sparse index。
+- [ ] 只有当读放大真的开始明显时，再加 Bloom filter。
+- [ ] 只有当磁盘格式稳定后，再考虑 block-based read。
+- [ ] 增加 benchmark，测写入吞吐、重启耗时和点查性能。
+
+## 当前不打算做的事
+
+- [ ] 先不要做 leveled compaction。
+- [ ] 先不要做后台 compaction 线程。
+- [ ] 先不要为了 LSM 工作去实现 Redis 兼容 RESP。
+- [ ] 先不要在基础 SSTable 正确性完成前就加 Bloom filter。
+
+## 建议的下一步
+
+- [ ] 先从 `BTreeMap` memtable 和 tombstone 设计说明开始。
