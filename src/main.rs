@@ -1,30 +1,24 @@
+mod cli;
 mod command;
 mod config;
 mod database;
 mod protocol;
 mod session;
+mod shutdown;
 mod snapshot;
 mod storage_engine;
 mod wal;
 
-use std::{io::Result, path::PathBuf, sync::Arc};
+use std::{io::Result, sync::Arc};
 
-use clap::Parser;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::broadcast, task::JoinSet};
 use tracing_subscriber::EnvFilter;
 
-#[derive(Debug, Parser)]
-#[command(name = "acorusdb")]
-#[command(version)]
-#[command(about = "A lightweight TCP key-value database")]
-struct Cli {
-    #[arg(short, long, default_value = "acorusdb.toml")]
-    config: PathBuf,
-}
+use crate::{cli::Cli, shutdown::wait_for_shutdown_signal};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_args();
     let (config, loaded_from_file) = config::Config::load(cli.config.as_path())?;
 
     tracing_subscriber::fmt()
@@ -56,17 +50,44 @@ async fn main() -> Result<()> {
         config.wal.compact_threshold_bytes,
     )?);
 
+    let (shutdown_tx, _) = broadcast::channel(1);
+    let mut sessions = JoinSet::new();
+    let shutdown_signal = wait_for_shutdown_signal();
+    tokio::pin!(shutdown_signal);
+
     loop {
-        match listener.accept().await {
-            Ok((stream, peer_addr)) => {
-                let database = Arc::clone(&database);
-                tokio::spawn(async move {
-                    if let Err(err) = session::run(stream, database).await {
-                        tracing::error!(%peer_addr, error = %err, "connection failed");
-                    }
-                });
+        tokio::select! {
+            signal = &mut shutdown_signal => {
+                let signal = signal?;
+                tracing::info!(signal = %signal.as_str(), "received shutdown signal");
+                break;
             }
-            Err(err) => tracing::error!(error = %err, "failed to accept connection"),
+            accept_result = listener.accept() => match accept_result {
+                Ok((stream, peer_addr)) => {
+                    let database = Arc::clone(&database);
+                    let shutdown_rx = shutdown_tx.subscribe();
+                    sessions.spawn(async move {
+                        if let Err(err) = session::run(stream, database, shutdown_rx).await {
+                            tracing::error!(%peer_addr, error = %err, "connection failed");
+                        }
+                    });
+                }
+                Err(err) => tracing::error!(error = %err, "failed to accept connection"),
+            }
         }
     }
+
+    drop(listener);
+    let _ = shutdown_tx.send(());
+    drop(shutdown_tx);
+
+    while let Some(result) = sessions.join_next().await {
+        if let Err(err) = result {
+            tracing::error!(error = %err, "session task failed");
+        }
+    }
+
+    tracing::info!("shutdown complete");
+
+    Ok(())
 }
