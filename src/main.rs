@@ -9,12 +9,22 @@ mod snapshot;
 mod storage_engine;
 mod wal;
 
-use std::{io::Result, sync::Arc};
+use std::{
+    io::Result,
+    sync::Arc,
+};
 
-use tokio::{net::TcpListener, sync::broadcast, task::JoinSet};
+use tokio::{
+    net::TcpListener,
+    sync::broadcast,
+    task::JoinSet,
+};
 use tracing_subscriber::EnvFilter;
 
-use crate::{cli::Cli, shutdown::wait_for_shutdown_signal};
+use crate::{
+    cli::Cli,
+    shutdown::wait_for_shutdown_signal,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {

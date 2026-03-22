@@ -1,7 +1,14 @@
 use std::{
     fs,
-    io::{Error, ErrorKind, Result},
-    path::{Path, PathBuf},
+    io::{
+        Error,
+        ErrorKind,
+        Result,
+    },
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use serde::Deserialize;
@@ -74,7 +81,8 @@ impl Default for WalConfig {
 }
 
 impl Config {
-    /// Loads the configuration from a TOML file. If the file does not exist, returns the default configuration.
+    /// Loads the configuration from a TOML file. If the file does not exist, returns the default
+    /// configuration.
     pub fn load(path: &Path) -> Result<(Self, bool)> {
         if !path.exists() {
             return Ok((Self::default(), false));

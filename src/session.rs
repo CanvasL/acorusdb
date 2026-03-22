@@ -1,9 +1,18 @@
-use std::{io::Result, sync::Arc};
+use std::{
+    io::Result,
+    sync::Arc,
+};
 
-use crate::{database::Database, protocol};
+use crate::{
+    database::Database,
+    protocol,
+};
 
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{
+        AsyncBufReadExt,
+        BufReader,
+    },
     net::TcpStream,
     sync::broadcast,
 };
@@ -84,20 +93,36 @@ mod tests {
         path::PathBuf,
         sync::{
             Arc,
-            atomic::{AtomicU64, Ordering},
+            atomic::{
+                AtomicU64,
+                Ordering,
+            },
         },
-        time::{SystemTime, UNIX_EPOCH},
+        time::{
+            SystemTime,
+            UNIX_EPOCH,
+        },
     };
 
     use tokio::{
-        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-        net::{TcpListener, TcpStream},
+        io::{
+            AsyncBufReadExt,
+            AsyncWriteExt,
+            BufReader,
+        },
+        net::{
+            TcpListener,
+            TcpStream,
+        },
         sync::broadcast,
         task::JoinHandle,
     };
 
     use super::run;
-    use crate::{database::Database, protocol};
+    use crate::{
+        database::Database,
+        protocol,
+    };
 
     #[tokio::test]
     async fn session_round_trip_supports_ping_exists_and_exit() -> Result<()> {
@@ -105,7 +130,10 @@ mod tests {
         let (reader, mut writer) = connect_lines(server.addr).await?;
         let mut lines = BufReader::new(reader).lines();
 
-        assert_eq!(lines.next_line().await?, Some(protocol::WELCOME_LINE.to_string()));
+        assert_eq!(
+            lines.next_line().await?,
+            Some(protocol::WELCOME_LINE.to_string())
+        );
 
         writer.write_all(b"PING\n").await?;
         assert_eq!(lines.next_line().await?, Some("PONG".to_string()));
@@ -140,7 +168,10 @@ mod tests {
         let (reader, _writer) = connect_lines(server.addr).await?;
         let mut lines = BufReader::new(reader).lines();
 
-        assert_eq!(lines.next_line().await?, Some(protocol::WELCOME_LINE.to_string()));
+        assert_eq!(
+            lines.next_line().await?,
+            Some(protocol::WELCOME_LINE.to_string())
+        );
 
         let _ = server.shutdown_tx.send(());
 

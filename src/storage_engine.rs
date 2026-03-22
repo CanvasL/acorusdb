@@ -1,8 +1,15 @@
-use std::{collections::HashMap, io::Result, path::Path};
+use std::{
+    collections::HashMap,
+    io::Result,
+    path::Path,
+};
 
 use crate::{
     snapshot::Snapshot,
-    wal::{Wal, WalEntry},
+    wal::{
+        Wal,
+        WalEntry,
+    },
 };
 
 /// The `StorageEngine` is responsible for managing the in-memory data, the snapshot, and the WAL.
@@ -92,10 +99,10 @@ impl StorageEngine {
     /// should be called after every write operation to ensure that the WAL does not grow
     /// indefinitely.
     fn maybe_compact(&mut self) {
-        if self.wal.should_compact(self.wal_compact_threshold_bytes) {
-            if let Err(err) = self.compact() {
-                tracing::error!(error = %err, "failed to compact data");
-            }
+        if self.wal.should_compact(self.wal_compact_threshold_bytes)
+            && let Err(err) = self.compact()
+        {
+            tracing::error!(error = %err, "failed to compact data");
         }
     }
 
@@ -117,10 +124,19 @@ impl StorageEngine {
 mod tests {
     use std::{
         fs,
-        io::{ErrorKind, Result},
+        io::{
+            ErrorKind,
+            Result,
+        },
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
+        sync::atomic::{
+            AtomicU64,
+            Ordering,
+        },
+        time::{
+            SystemTime,
+            UNIX_EPOCH,
+        },
     };
 
     use super::StorageEngine;

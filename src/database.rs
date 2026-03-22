@@ -1,8 +1,14 @@
-use std::{io::Result, path::Path};
+use std::{
+    io::Result,
+    path::Path,
+};
 
 use tokio::sync::Mutex;
 
-use crate::{command::Command, storage_engine::StorageEngine};
+use crate::{
+    command::Command,
+    storage_engine::StorageEngine,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecuteResult {
@@ -42,7 +48,9 @@ impl Database {
             Command::Get { key } => Ok(ExecuteResult::Get(
                 storage_engine.get(&key).map(str::to_owned),
             )),
-            Command::Exists { key } => Ok(ExecuteResult::Exists(storage_engine.get(&key).is_some())),
+            Command::Exists { key } => {
+                Ok(ExecuteResult::Exists(storage_engine.get(&key).is_some()))
+            }
             Command::Del { key } => Ok(ExecuteResult::Delete(storage_engine.delete(&key)?)),
         }
     }

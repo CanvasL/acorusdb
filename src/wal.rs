@@ -1,7 +1,20 @@
 use std::{
-    fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Error, ErrorKind, Result, Write},
-    path::{Path, PathBuf},
+    fs::{
+        File,
+        OpenOptions,
+    },
+    io::{
+        BufRead,
+        BufReader,
+        Error,
+        ErrorKind,
+        Result,
+        Write,
+    },
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 mod wal_prefix {
