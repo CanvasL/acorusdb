@@ -4,15 +4,15 @@ use std::{
         self,
         File,
     },
-    io::{
-        Error,
-        ErrorKind,
-        Result,
-    },
     path::{
         Path,
         PathBuf,
     },
+};
+
+use crate::error::{
+    AcorusError,
+    Result,
 };
 
 pub struct Snapshot {
@@ -30,26 +30,52 @@ impl Snapshot {
     /// Saving the current state to a snapshot file. This should be called periodically to prevent
     /// the WAL from growing indefinitely.
     pub fn save(&mut self, data: &HashMap<String, String>) -> Result<()> {
+        let snapshot_path = self.path.clone();
+
         // 1. generate temp file path
-        let tmp_path = self.path.with_extension("snapshot.tmp");
+        let tmp_path = snapshot_path.with_extension("snapshot.tmp");
 
         // 2. serialize data
-        let bytes = rmp_serde::to_vec(data).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        let bytes = rmp_serde::to_vec(data).map_err(|error| AcorusError::SnapshotEncode {
+            path: snapshot_path.clone(),
+            message: error.to_string(),
+        })?;
 
         // 3. write to temp file
-        fs::write(&tmp_path, &bytes)?;
+        fs::write(&tmp_path, &bytes).map_err(|source| AcorusError::SnapshotWrite {
+            path: tmp_path.clone(),
+            source,
+        })?;
 
         // 4. sync temp file to disk
-        let file = File::open(&tmp_path)?;
-        file.sync_all()?;
+        let file = File::open(&tmp_path).map_err(|source| AcorusError::SnapshotWrite {
+            path: tmp_path.clone(),
+            source,
+        })?;
+        file.sync_all().map_err(|source| AcorusError::SnapshotWrite {
+            path: tmp_path.clone(),
+            source,
+        })?;
 
         // 5. atomically rename temp file to snapshot file
-        std::fs::rename(&tmp_path, &self.path)?;
+        std::fs::rename(&tmp_path, &snapshot_path).map_err(|source| AcorusError::SnapshotWrite {
+            path: snapshot_path.clone(),
+            source,
+        })?;
 
         // 6. sync directory to ensure the rename is persisted
-        if let Some(dir) = self.path.parent() {
-            let dir_file = File::open(dir)?;
-            dir_file.sync_all()?;
+        if let Some(dir) = snapshot_path.parent() {
+            let dir_path = dir.to_path_buf();
+            let dir_file = File::open(dir).map_err(|source| AcorusError::SnapshotWrite {
+                path: dir_path.clone(),
+                source,
+            })?;
+            dir_file
+                .sync_all()
+                .map_err(|source| AcorusError::SnapshotWrite {
+                    path: dir_path,
+                    source,
+                })?;
         }
 
         Ok(())
@@ -58,21 +84,32 @@ impl Snapshot {
     /// Loading the snapshot from disk. This should be called during startup to restore the state
     /// before replaying the WAL.
     pub fn load(&mut self) -> Result<HashMap<String, String>> {
+        let snapshot_path = self.path.clone();
+
         // 1. check if snapshot file exists, remove temp file if it exists
-        let tmp_path = self.path.with_extension("snapshot.tmp");
+        let tmp_path = snapshot_path.with_extension("snapshot.tmp");
         if tmp_path.exists() {
-            fs::remove_file(&tmp_path)?;
+            fs::remove_file(&tmp_path).map_err(|source| AcorusError::SnapshotRead {
+                path: tmp_path.clone(),
+                source,
+            })?;
         }
 
         // 2. check if snapshot file exists, if not return empty data
-        if !self.path.exists() {
+        if !snapshot_path.exists() {
             return Ok(HashMap::new());
         }
 
         // 3. read snapshot file
-        let bytes = fs::read(&self.path)?;
+        let bytes = fs::read(&snapshot_path).map_err(|source| AcorusError::SnapshotRead {
+            path: snapshot_path.clone(),
+            source,
+        })?;
         let data: HashMap<String, String> =
-            rmp_serde::from_slice(&bytes).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+            rmp_serde::from_slice(&bytes).map_err(|error| AcorusError::SnapshotDecode {
+                path: snapshot_path,
+                message: error.to_string(),
+            })?;
 
         Ok(data)
     }

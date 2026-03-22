@@ -1,10 +1,10 @@
 use std::{
     collections::HashMap,
-    io::Result,
     path::Path,
 };
 
 use crate::{
+    error::Result,
     snapshot::Snapshot,
     wal::{
         Wal,
@@ -124,10 +124,6 @@ impl StorageEngine {
 mod tests {
     use std::{
         fs,
-        io::{
-            ErrorKind,
-            Result,
-        },
         path::PathBuf,
         sync::atomic::{
             AtomicU64,
@@ -140,7 +136,13 @@ mod tests {
     };
 
     use super::StorageEngine;
-    use crate::wal::WalEntry;
+    use crate::{
+        error::{
+            AcorusError,
+            Result,
+        },
+        wal::WalEntry,
+    };
 
     #[test]
     fn recovers_value_from_wal_after_restart() -> Result<()> {
@@ -253,7 +255,7 @@ mod tests {
         let err = open_engine(&paths, usize::MAX)
             .err()
             .expect("expected WAL corruption to fail recovery");
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(matches!(err, AcorusError::CorruptedWal { .. }));
 
         Ok(())
     }

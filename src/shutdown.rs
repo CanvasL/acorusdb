@@ -1,4 +1,7 @@
-use std::io::Result;
+use crate::error::{
+    AcorusError,
+    Result,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ShutdownSignal {
@@ -23,11 +26,11 @@ pub async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
             signal,
         };
 
-        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigterm = signal(SignalKind::terminate()).map_err(AcorusError::ShutdownSignal)?;
 
         tokio::select! {
             result = tokio::signal::ctrl_c() => {
-                result?;
+                result.map_err(AcorusError::ShutdownSignal)?;
                 Ok(ShutdownSignal::CtrlC)
             }
             _ = sigterm.recv() => Ok(ShutdownSignal::Sigterm),
@@ -36,7 +39,9 @@ pub async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
 
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await?;
+        tokio::signal::ctrl_c()
+            .await
+            .map_err(AcorusError::ShutdownSignal)?;
         Ok(ShutdownSignal::CtrlC)
     }
 }

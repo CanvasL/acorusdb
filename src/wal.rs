@@ -6,15 +6,17 @@ use std::{
     io::{
         BufRead,
         BufReader,
-        Error,
-        ErrorKind,
-        Result,
         Write,
     },
     path::{
         Path,
         PathBuf,
     },
+};
+
+use crate::error::{
+    AcorusError,
+    Result,
 };
 
 mod wal_prefix {
@@ -34,18 +36,37 @@ impl Wal {
             .create(true)
             .append(true)
             .read(true)
-            .open(path)?;
+            .open(path)
+            .map_err(|source| AcorusError::WalOpen {
+                path: path.to_path_buf(),
+                source,
+            })?;
 
         Ok(Self {
             path: path.to_path_buf(),
-            size_bytes: file.metadata()?.len() as usize,
+            size_bytes: file
+                .metadata()
+                .map_err(|source| AcorusError::WalOpen {
+                    path: path.to_path_buf(),
+                    source,
+                })?
+                .len() as usize,
             file,
         })
     }
 
     pub fn read_entries(&mut self) -> Result<Vec<WalEntry>> {
-        let read_file = File::open(&self.path)?;
-        let file_len = read_file.metadata()?.len() as usize;
+        let read_file = File::open(&self.path).map_err(|source| AcorusError::WalRead {
+            path: self.path.clone(),
+            source,
+        })?;
+        let file_len = read_file
+            .metadata()
+            .map_err(|source| AcorusError::WalRead {
+                path: self.path.clone(),
+                source,
+            })?
+            .len() as usize;
         let reader = BufReader::new(read_file);
         let mut entries = Vec::new();
 
@@ -54,7 +75,10 @@ impl Wal {
 
         for line in reader.lines() {
             line_num += 1;
-            let line = line?;
+            let line = line.map_err(|source| AcorusError::WalRead {
+                path: self.path.clone(),
+                source,
+            })?;
             let current_pos = last_pos + line.len() + 1;
             last_pos = current_pos;
 
@@ -80,13 +104,11 @@ impl Wal {
                 } else {
                     // if the line is not last line and is malformed, we should return an error
                     // since it indicates data corruption.
-                    return Err(Error::new(
-                        ErrorKind::InvalidData,
-                        format!(
-                            "Corrupted WAL at line {}: '{}' (not the last line)",
-                            line_num, line
-                        ),
-                    ));
+                    return Err(AcorusError::CorruptedWal {
+                        path: self.path.clone(),
+                        line: line_num,
+                        message: format!("{line:?} is malformed and not the last line"),
+                    });
                 }
             }
         }
@@ -98,14 +120,28 @@ impl Wal {
 
     pub fn append(&mut self, entry: &WalEntry) -> Result<()> {
         let line = entry.to_line();
-        self.file.write_all(line.as_bytes())?;
-        self.file.write_all(b"\n")?;
+        self.file
+            .write_all(line.as_bytes())
+            .map_err(|source| AcorusError::WalWrite {
+                path: self.path.clone(),
+                source,
+            })?;
+        self.file.write_all(b"\n").map_err(|source| AcorusError::WalWrite {
+            path: self.path.clone(),
+            source,
+        })?;
         // flush the file buffer to ensure the data is written to the OS
-        self.file.flush()?;
+        self.file.flush().map_err(|source| AcorusError::WalWrite {
+            path: self.path.clone(),
+            source,
+        })?;
         // and then call sync_all to ensure the data is flushed to disk.
         // This way we can guarantee that once append returns successfully,
         // the entry is safely stored in the WAL file, even in case of a crash.
-        self.file.sync_all()?;
+        self.file.sync_all().map_err(|source| AcorusError::WalWrite {
+            path: self.path.clone(),
+            source,
+        })?;
 
         self.size_bytes += line.len() + 1;
 
@@ -117,18 +153,42 @@ impl Wal {
             .create(true)
             .write(true)
             .truncate(true)
-            .open(&self.path)?;
-        reset_file.flush()?;
-        reset_file.sync_all()?;
+            .open(&self.path)
+            .map_err(|source| AcorusError::WalReset {
+                path: self.path.clone(),
+                source,
+            })?;
+        reset_file.flush().map_err(|source| AcorusError::WalReset {
+            path: self.path.clone(),
+            source,
+        })?;
+        reset_file.sync_all().map_err(|source| AcorusError::WalReset {
+            path: self.path.clone(),
+            source,
+        })?;
         if let Some(dir) = self.path.parent() {
-            File::open(dir)?.sync_all()?;
+            let dir_path = dir.to_path_buf();
+            File::open(dir)
+                .map_err(|source| AcorusError::WalReset {
+                    path: dir_path.clone(),
+                    source,
+                })?
+                .sync_all()
+                .map_err(|source| AcorusError::WalReset {
+                    path: dir_path,
+                    source,
+                })?;
         }
 
         self.file = OpenOptions::new()
             .create(true)
             .append(true)
             .read(true)
-            .open(&self.path)?;
+            .open(&self.path)
+            .map_err(|source| AcorusError::WalReset {
+                path: self.path.clone(),
+                source,
+            })?;
 
         self.size_bytes = 0;
 

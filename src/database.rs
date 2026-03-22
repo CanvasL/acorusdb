@@ -1,5 +1,4 @@
 use std::{
-    io::Result,
     path::Path,
 };
 
@@ -7,6 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     command::Command,
+    error::Result,
     storage_engine::StorageEngine,
 };
 

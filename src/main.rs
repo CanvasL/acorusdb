@@ -1,9 +1,8 @@
 mod cli;
 
-use std::io::Result;
-
 use acorusdb::{
     config::Config,
+    error::Result,
     server,
 };
 use tracing_subscriber::EnvFilter;

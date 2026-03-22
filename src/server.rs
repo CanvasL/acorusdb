@@ -1,5 +1,4 @@
 use std::{
-    io::Result,
     sync::Arc,
 };
 
@@ -12,12 +11,22 @@ use tokio::{
 use crate::{
     config::Config,
     database::Database,
+    error::{
+        AcorusError,
+        Result,
+    },
     session,
     shutdown::wait_for_shutdown_signal,
 };
 
 pub async fn run(config: Config) -> Result<()> {
-    let listener = TcpListener::bind(&config.server.bind_addr).await?;
+    let bind_addr = config.server.bind_addr.clone();
+    let listener = TcpListener::bind(&bind_addr)
+        .await
+        .map_err(|source| AcorusError::Bind {
+            addr: bind_addr,
+            source,
+        })?;
     let addr = listener.local_addr()?;
 
     tracing::info!(%addr, "acorusdb listening");

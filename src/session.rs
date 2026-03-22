@@ -1,10 +1,10 @@
 use std::{
-    io::Result,
     sync::Arc,
 };
 
 use crate::{
     database::Database,
+    error::Result,
     protocol,
 };
 
@@ -89,7 +89,6 @@ pub async fn run(
 mod tests {
     use std::{
         fs,
-        io::Result,
         path::PathBuf,
         sync::{
             Arc,
@@ -121,6 +120,7 @@ mod tests {
     use super::run;
     use crate::{
         database::Database,
+        error::Result,
         protocol,
     };
 

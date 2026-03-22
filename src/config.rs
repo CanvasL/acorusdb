@@ -1,10 +1,5 @@
 use std::{
     fs,
-    io::{
-        Error,
-        ErrorKind,
-        Result,
-    },
     path::{
         Path,
         PathBuf,
@@ -12,6 +7,11 @@ use std::{
 };
 
 use serde::Deserialize;
+
+use crate::error::{
+    AcorusError,
+    Result,
+};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -88,9 +88,14 @@ impl Config {
             return Ok((Self::default(), false));
         }
 
-        let raw = fs::read_to_string(path)?;
-        let config: Self =
-            toml::from_str(&raw).map_err(|error| Error::new(ErrorKind::InvalidData, error))?;
+        let raw = fs::read_to_string(path).map_err(|source| AcorusError::ConfigRead {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let config: Self = toml::from_str(&raw).map_err(|error| AcorusError::ConfigParse {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })?;
 
         Ok((config, true))
     }
