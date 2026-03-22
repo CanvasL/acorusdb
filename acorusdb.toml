@@ -1,0 +1,12 @@
+[server]
+bind_addr = "127.0.0.1:7634"
+
+[logging]
+level = "info"
+
+[snapshot]
+path = "acorusdb.snapshot"
+
+[wal]
+path = "acorusdb.wal"
+compact_threshold_bytes = 1024

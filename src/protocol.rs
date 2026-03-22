@@ -1,17 +1,10 @@
 use std::io;
 
-use tokio::io::{
-    AsyncWrite,
-    AsyncWriteExt,
-};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::{
-    command::Command,
-    database::ExecuteResult,
-};
+use crate::{command::Command, database::ExecuteResult};
 
 pub const WELCOME_LINE: &str = "WELCOME AcorusDB";
-pub const COMMANDS_BANNER: &str = "SET key value | GET key | DEL key | EXIT/QUIT";
 
 const SET_KEYWORD: &str = "SET";
 const GET_KEYWORD: &str = "GET";
@@ -207,12 +200,7 @@ fn single_arg(input: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ErrorResponse,
-        Request,
-        Usage,
-        parse_request,
-    };
+    use super::{ErrorResponse, Request, Usage, parse_request};
     use crate::command::Command;
 
     #[test]

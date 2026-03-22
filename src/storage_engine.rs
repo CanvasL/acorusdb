@@ -1,20 +1,9 @@
-use std::{
-    collections::HashMap,
-    io::Result,
-    path::Path,
-};
+use std::{collections::HashMap, io::Result, path::Path};
 
 use crate::{
     snapshot::Snapshot,
-    wal::{
-        Wal,
-        WalEntry,
-    },
+    wal::{Wal, WalEntry},
 };
-
-use tracing::error;
-
-const DEFAULT_WAL_COMPACT_THRESHOLD_BYTES: usize = 1024;
 
 /// The `StorageEngine` is responsible for managing the in-memory data, the snapshot, and the WAL.
 /// It provides methods to set, get, and delete key-value pairs, as well as to compact the data by
@@ -29,7 +18,11 @@ pub struct StorageEngine {
 impl StorageEngine {
     /// Opening the storage engine by loading the snapshot and replaying the WAL. This should be
     /// called during startup to restore the state.
-    pub fn open(snapshot_path: &Path, wal_path: &Path) -> Result<Self> {
+    pub fn open(
+        snapshot_path: &Path,
+        wal_path: &Path,
+        wal_compact_threshold_bytes: usize,
+    ) -> Result<Self> {
         let mut snapshot = Snapshot::open(snapshot_path)?;
         let mut wal = Wal::open(wal_path)?;
 
@@ -50,7 +43,7 @@ impl StorageEngine {
             data,
             snapshot,
             wal,
-            wal_compact_threshold_bytes: DEFAULT_WAL_COMPACT_THRESHOLD_BYTES,
+            wal_compact_threshold_bytes,
         })
     }
 
@@ -101,7 +94,7 @@ impl StorageEngine {
     fn maybe_compact(&mut self) {
         if self.wal.should_compact(self.wal_compact_threshold_bytes) {
             if let Err(err) = self.compact() {
-                error!(error = %err, "failed to compact data");
+                tracing::error!(error = %err, "failed to compact data");
             }
         }
     }

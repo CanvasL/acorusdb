@@ -1,14 +1,8 @@
-use std::{
-    io::Result,
-    path::Path,
-};
+use std::{io::Result, path::Path};
 
 use tokio::sync::Mutex;
 
-use crate::{
-    command::Command,
-    storage_engine::StorageEngine,
-};
+use crate::{command::Command, storage_engine::StorageEngine};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecuteResult {
@@ -22,9 +16,17 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn open(snapshot_path: &Path, wal_path: &Path) -> Result<Self> {
+    pub fn open(
+        snapshot_path: &Path,
+        wal_path: &Path,
+        wal_compact_threshold_bytes: usize,
+    ) -> Result<Self> {
         Ok(Self {
-            storage_engine: Mutex::new(StorageEngine::open(snapshot_path, wal_path)?),
+            storage_engine: Mutex::new(StorageEngine::open(
+                snapshot_path,
+                wal_path,
+                wal_compact_threshold_bytes,
+            )?),
         })
     }
 

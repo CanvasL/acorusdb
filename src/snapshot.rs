@@ -1,18 +1,8 @@
 use std::{
     collections::HashMap,
-    fs::{
-        self,
-        File,
-    },
-    io::{
-        Error,
-        ErrorKind,
-        Result,
-    },
-    path::{
-        Path,
-        PathBuf,
-    },
+    fs::{self, File},
+    io::{Error, ErrorKind, Result},
+    path::{Path, PathBuf},
 };
 
 pub struct Snapshot {

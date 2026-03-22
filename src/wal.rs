@@ -1,23 +1,8 @@
 use std::{
-    fs::{
-        File,
-        OpenOptions,
-    },
-    io::{
-        BufRead,
-        BufReader,
-        Error,
-        ErrorKind,
-        Result,
-        Write,
-    },
-    path::{
-        Path,
-        PathBuf,
-    },
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, Error, ErrorKind, Result, Write},
+    path::{Path, PathBuf},
 };
-
-use tracing::error;
 
 mod wal_prefix {
     pub const SET: &str = "SET";
@@ -74,7 +59,7 @@ impl Wal {
                     // if the line is last line and is malformed, we can ignore it since it may be a
                     // result of a crash during writing. maybe it is because the
                     // process crashed before the line was fully written
-                    error!(
+                    tracing::error!(
                         line_num,
                         "ignoring malformed last line in WAL file, likely due to crash during writing"
                     );
