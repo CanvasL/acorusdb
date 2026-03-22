@@ -1,8 +1,12 @@
-use std::io::Result;
-use std::sync::Arc;
+use std::{
+    io::Result,
+    sync::Arc,
+};
 
-use crate::database::Database;
-use crate::protocol;
+use crate::{
+    database::Database,
+    protocol,
+};
 
 use tokio::{
     io::{

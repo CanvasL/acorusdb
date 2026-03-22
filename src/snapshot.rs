@@ -1,8 +1,18 @@
 use std::{
     collections::HashMap,
-    fs::{self, File},
-    io::{Error, ErrorKind, Result},
-    path::{Path, PathBuf},
+    fs::{
+        self,
+        File,
+    },
+    io::{
+        Error,
+        ErrorKind,
+        Result,
+    },
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 pub struct Snapshot {
@@ -17,7 +27,8 @@ impl Snapshot {
         })
     }
 
-    /// Saving the current state to a snapshot file. This should be called periodically to prevent the WAL from growing indefinitely.
+    /// Saving the current state to a snapshot file. This should be called periodically to prevent
+    /// the WAL from growing indefinitely.
     pub fn save(&mut self, data: &HashMap<String, String>) -> Result<()> {
         // 1. generate temp file path
         let tmp_path = self.path.with_extension("snapshot.tmp");
@@ -35,10 +46,17 @@ impl Snapshot {
         // 5. atomically rename temp file to snapshot file
         std::fs::rename(&tmp_path, &self.path)?;
 
+        // 6. sync directory to ensure the rename is persisted
+        if let Some(dir) = self.path.parent() {
+            let dir_file = File::open(dir)?;
+            dir_file.sync_all()?;
+        }
+
         Ok(())
     }
 
-    /// Loading the snapshot from disk. This should be called during startup to restore the state before replaying the WAL.
+    /// Loading the snapshot from disk. This should be called during startup to restore the state
+    /// before replaying the WAL.
     pub fn load(&mut self) -> Result<HashMap<String, String>> {
         // 1. check if snapshot file exists, remove temp file if it exists
         let tmp_path = self.path.with_extension("snapshot.tmp");

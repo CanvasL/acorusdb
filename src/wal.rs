@@ -1,7 +1,20 @@
 use std::{
-    fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Error, ErrorKind, Result, Write},
-    path::{Path, PathBuf},
+    fs::{
+        File,
+        OpenOptions,
+    },
+    io::{
+        BufRead,
+        BufReader,
+        Error,
+        ErrorKind,
+        Result,
+        Write,
+    },
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use tracing::error;
@@ -14,7 +27,7 @@ mod wal_prefix {
 pub struct Wal {
     path: PathBuf,
     file: File,
-    pub entries_len: usize,
+    size_bytes: usize,
 }
 
 impl Wal {
@@ -27,16 +40,16 @@ impl Wal {
 
         Ok(Self {
             path: path.to_path_buf(),
+            size_bytes: file.metadata()?.len() as usize,
             file,
-            entries_len: 0,
         })
     }
 
     pub fn read_entries(&mut self) -> Result<Vec<WalEntry>> {
-        let reader = BufReader::new(File::open(&self.path)?);
+        let read_file = File::open(&self.path)?;
+        let file_len = read_file.metadata()?.len() as usize;
+        let reader = BufReader::new(read_file);
         let mut entries = Vec::new();
-
-        let file_len = self.file.metadata()?.len();
 
         let mut line_num = 0;
         let mut last_pos = 0;
@@ -55,18 +68,20 @@ impl Wal {
             if let Some(entry) = WalEntry::from_line(&line) {
                 entries.push(entry);
             } else {
-                let is_last_line = current_pos as u64 >= file_len;
+                let is_last_line = current_pos >= file_len;
 
                 if is_last_line {
-                    // if the line is last line and is malformed, we can ignore it since it may be a result of a crash during writing.
-                    // maybe it is because the process crashed before the line was fully written
+                    // if the line is last line and is malformed, we can ignore it since it may be a
+                    // result of a crash during writing. maybe it is because the
+                    // process crashed before the line was fully written
                     error!(
                         line_num,
                         "ignoring malformed last line in WAL file, likely due to crash during writing"
                     );
                     break;
                 } else {
-                    // if the line is not last line and is malformed, we should return an error since it indicates data corruption.
+                    // if the line is not last line and is malformed, we should return an error
+                    // since it indicates data corruption.
                     return Err(Error::new(
                         ErrorKind::InvalidData,
                         format!(
@@ -78,36 +93,52 @@ impl Wal {
             }
         }
 
-        self.entries_len = entries.len();
+        self.size_bytes = file_len;
 
         Ok(entries)
     }
 
     pub fn append(&mut self, entry: &WalEntry) -> Result<()> {
-        self.file.write_all(entry.to_line().as_bytes())?;
+        let line = entry.to_line();
+        self.file.write_all(line.as_bytes())?;
         self.file.write_all(b"\n")?;
+        // flush the file buffer to ensure the data is written to the OS
         self.file.flush()?;
+        // and then call sync_all to ensure the data is flushed to disk.
+        // This way we can guarantee that once append returns successfully,
+        // the entry is safely stored in the WAL file, even in case of a crash.
+        self.file.sync_all()?;
 
-        self.entries_len += 1;
+        self.size_bytes += line.len() + 1;
 
         Ok(())
     }
 
     pub fn reset(&mut self) -> Result<()> {
-        self.file = OpenOptions::new()
+        let mut reset_file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&self.path)?;
+        reset_file.flush()?;
+        reset_file.sync_all()?;
+        if let Some(dir) = self.path.parent() {
+            File::open(dir)?.sync_all()?;
+        }
 
         self.file = OpenOptions::new()
             .create(true)
             .append(true)
+            .read(true)
             .open(&self.path)?;
 
-        self.entries_len = 0;
+        self.size_bytes = 0;
 
         Ok(())
+    }
+
+    pub fn should_compact(&self, threshold: usize) -> bool {
+        self.size_bytes > threshold
     }
 }
 

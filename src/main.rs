@@ -2,9 +2,9 @@ mod command;
 mod database;
 mod protocol;
 mod session;
+mod snapshot;
 mod storage_engine;
 mod wal;
-mod snapshot;
 
 use std::{
     io::Result,
@@ -34,7 +34,10 @@ async fn main() -> Result<()> {
     info!(%addr, "AcorusDB listening");
     info!("Commands: {}", protocol::COMMANDS_BANNER);
 
-    let database = Arc::new(database::Database::open(Path::new("acorusdb.snapshot"), Path::new("acorusdb.wal"))?);
+    let database = Arc::new(database::Database::open(
+        Path::new("acorusdb.snapshot"),
+        Path::new("acorusdb.wal"),
+    )?);
 
     loop {
         match listener.accept().await {
