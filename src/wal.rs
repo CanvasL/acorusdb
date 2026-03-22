@@ -1,18 +1,7 @@
 use std::{
-    fs::{
-        File,
-        OpenOptions,
-    },
-    io::{
-        BufRead,
-        BufReader,
-        Result,
-        Write,
-    },
-    path::{
-        Path,
-        PathBuf,
-    },
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, Result, Write},
+    path::{Path, PathBuf},
 };
 
 mod wal_prefix {
@@ -46,12 +35,13 @@ impl Wal {
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
+                // skip empty lines
                 continue;
             }
 
             if let Some(entry) = WalEntry::from_line(&line) {
                 entries.push(entry);
-            }
+            } 
         }
 
         Ok(entries)
@@ -61,6 +51,28 @@ impl Wal {
         self.file.write_all(entry.to_line().as_bytes())?;
         self.file.write_all(b"\n")?;
         self.file.flush()
+    }
+
+    pub fn reset(&mut self) -> Result<()> {
+        self.file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)?;
+
+        self.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+
+        Ok(())
+    }
+
+    pub fn count_entries(&self) -> usize {
+        match self.read_entries() {
+            Ok(entries) => entries.len(),
+            Err(_) => 0,
+        }
     }
 }
 

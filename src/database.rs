@@ -22,9 +22,9 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(snapshot_path: &Path, wal_path: &Path) -> Result<Self> {
         Ok(Self {
-            storage_engine: Mutex::new(StorageEngine::open(path)?),
+            storage_engine: Mutex::new(StorageEngine::open(snapshot_path, wal_path)?),
         })
     }
 
