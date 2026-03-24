@@ -1,9 +1,15 @@
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+};
 
 use crate::{
     error::AcorusResult,
     sstable::SSTable,
-    wal::{Wal, WalEntry},
+    wal::{
+        Wal,
+        WalEntry,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -128,13 +134,25 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
+        sync::atomic::{
+            AtomicU64,
+            Ordering,
+        },
+        time::{
+            SystemTime,
+            UNIX_EPOCH,
+        },
     };
 
-    use super::{MemValue, StorageEngine};
+    use super::{
+        MemValue,
+        StorageEngine,
+    };
     use crate::{
-        error::{AcorusError, AcorusResult},
+        error::{
+            AcorusError,
+            AcorusResult,
+        },
         wal::WalEntry,
     };
 

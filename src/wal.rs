@@ -1,12 +1,28 @@
 use std::{
-    fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Write},
-    path::{Path, PathBuf},
+    fs::{
+        File,
+        OpenOptions,
+    },
+    io::{
+        BufRead,
+        BufReader,
+        Write,
+    },
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use crate::{
-    error::{AcorusError, AcorusResult},
-    fs_utils::{ensure_parent_dir, parent_dir_for_sync},
+    error::{
+        AcorusError,
+        AcorusResult,
+    },
+    fs_utils::{
+        ensure_parent_dir,
+        parent_dir_for_sync,
+    },
 };
 
 mod wal_prefix {

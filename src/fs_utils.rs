@@ -1,6 +1,12 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+};
 
-use crate::error::{AcorusError, AcorusResult};
+use crate::error::{
+    AcorusError,
+    AcorusResult,
+};
 
 pub fn parent_dir_for_sync(path: &Path) -> &Path {
     path.parent()
@@ -25,12 +31,24 @@ pub fn ensure_parent_dir(path: &Path) -> AcorusResult<()> {
 #[cfg(test)]
 mod tests {
     use std::{
-        path::{Path, PathBuf},
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
+        path::{
+            Path,
+            PathBuf,
+        },
+        sync::atomic::{
+            AtomicU64,
+            Ordering,
+        },
+        time::{
+            SystemTime,
+            UNIX_EPOCH,
+        },
     };
 
-    use super::{ensure_parent_dir, parent_dir_for_sync};
+    use super::{
+        ensure_parent_dir,
+        parent_dir_for_sync,
+    };
 
     #[test]
     fn uses_current_directory_for_relative_file_path() {

@@ -1,9 +1,16 @@
 use std::sync::Arc;
 
-use crate::{database::Database, error::AcorusResult, protocol};
+use crate::{
+    database::Database,
+    error::AcorusResult,
+    protocol,
+};
 
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{
+        AsyncBufReadExt,
+        BufReader,
+    },
     net::TcpStream,
     sync::broadcast,
 };
@@ -83,20 +90,37 @@ mod tests {
         path::PathBuf,
         sync::{
             Arc,
-            atomic::{AtomicU64, Ordering},
+            atomic::{
+                AtomicU64,
+                Ordering,
+            },
         },
-        time::{SystemTime, UNIX_EPOCH},
+        time::{
+            SystemTime,
+            UNIX_EPOCH,
+        },
     };
 
     use tokio::{
-        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-        net::{TcpListener, TcpStream},
+        io::{
+            AsyncBufReadExt,
+            AsyncWriteExt,
+            BufReader,
+        },
+        net::{
+            TcpListener,
+            TcpStream,
+        },
         sync::broadcast,
         task::JoinHandle,
     };
 
     use super::run;
-    use crate::{database::Database, error::AcorusResult, protocol};
+    use crate::{
+        database::Database,
+        error::AcorusResult,
+        protocol,
+    };
 
     #[tokio::test]
     async fn session_round_trip_supports_ping_exists_and_exit() -> AcorusResult<()> {

@@ -1,4 +1,7 @@
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    path::PathBuf,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum AcorusError {

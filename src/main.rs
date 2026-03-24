@@ -1,6 +1,10 @@
 mod cli;
 
-use acorusdb::{config::Config, error::AcorusResult, server};
+use acorusdb::{
+    config::Config,
+    error::AcorusResult,
+    server,
+};
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::Cli;

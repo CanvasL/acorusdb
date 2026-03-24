@@ -1,11 +1,17 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use serde::Deserialize;
 
-use crate::error::{AcorusError, AcorusResult};
+use crate::error::{
+    AcorusError,
+    AcorusResult,
+};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]

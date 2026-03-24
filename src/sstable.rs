@@ -1,12 +1,24 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
-    path::{Path, PathBuf},
+    fs::{
+        self,
+        File,
+    },
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 
 use crate::{
-    error::{AcorusError, AcorusResult},
-    fs_utils::{ensure_parent_dir, parent_dir_for_sync},
+    error::{
+        AcorusError,
+        AcorusResult,
+    },
+    fs_utils::{
+        ensure_parent_dir,
+        parent_dir_for_sync,
+    },
     storage_engine::MemValue,
 };
 
@@ -134,12 +146,24 @@ mod tests {
         collections::BTreeMap,
         fs,
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
+        sync::atomic::{
+            AtomicU64,
+            Ordering,
+        },
+        time::{
+            SystemTime,
+            UNIX_EPOCH,
+        },
     };
 
-    use super::{SSTable, TableEntry};
-    use crate::{error::AcorusResult, storage_engine::MemValue};
+    use super::{
+        SSTable,
+        TableEntry,
+    };
+    use crate::{
+        error::AcorusResult,
+        storage_engine::MemValue,
+    };
 
     #[test]
     fn missing_file_returns_empty_mem_table() -> AcorusResult<()> {

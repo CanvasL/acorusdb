@@ -1,11 +1,18 @@
 use std::sync::Arc;
 
-use tokio::{net::TcpListener, sync::broadcast, task::JoinSet};
+use tokio::{
+    net::TcpListener,
+    sync::broadcast,
+    task::JoinSet,
+};
 
 use crate::{
     config::Config,
     database::Database,
-    error::{AcorusError, AcorusResult},
+    error::{
+        AcorusError,
+        AcorusResult,
+    },
     session,
     shutdown::wait_for_shutdown_signal,
 };
