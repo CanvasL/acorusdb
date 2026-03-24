@@ -19,6 +19,7 @@ use crate::{
         ensure_parent_dir,
         parent_dir_for_sync,
     },
+    storage_engine::MemValue,
 };
 
 pub struct Snapshot {
@@ -37,7 +38,7 @@ impl Snapshot {
 
     /// Saving the current state to a snapshot file. This should be called periodically to prevent
     /// the WAL from growing indefinitely.
-    pub fn save(&mut self, data: &BTreeMap<String, String>) -> Result<()> {
+    pub fn save(&mut self, data: &BTreeMap<String, MemValue>) -> Result<()> {
         let snapshot_path = self.path.clone();
         ensure_parent_dir(&snapshot_path)?;
 
@@ -94,7 +95,7 @@ impl Snapshot {
 
     /// Loading the snapshot from disk. This should be called during startup to restore the state
     /// before replaying the WAL.
-    pub fn load(&mut self) -> Result<BTreeMap<String, String>> {
+    pub fn load(&mut self) -> Result<BTreeMap<String, MemValue>> {
         let snapshot_path = self.path.clone();
 
         // 1. check if snapshot file exists, remove temp file if it exists
@@ -116,7 +117,7 @@ impl Snapshot {
             path: snapshot_path.clone(),
             source,
         })?;
-        let data: BTreeMap<String, String> =
+        let data: BTreeMap<String, MemValue> =
             rmp_serde::from_slice(&bytes).map_err(|error| AcorusError::SnapshotDecode {
                 path: snapshot_path,
                 message: error.to_string(),

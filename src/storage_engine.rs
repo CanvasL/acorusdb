@@ -12,11 +12,17 @@ use crate::{
     },
 };
 
+#[derive(PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum MemValue {
+    Value(String),
+    Tombstone,
+}
+
 /// The `StorageEngine` is responsible for managing the in-memory data, the snapshot, and the WAL.
 /// It provides methods to set, get, and delete key-value pairs, as well as to compact the data by
 /// saving a new snapshot and clearing the WAL.
 pub struct StorageEngine {
-    data: BTreeMap<String, String>,
+    data: BTreeMap<String, MemValue>,
     wal_compact_threshold_bytes: usize,
     snapshot: Snapshot,
     wal: Wal,
@@ -38,10 +44,10 @@ impl StorageEngine {
         for entry in wal.read_entries()? {
             match entry {
                 WalEntry::Set { key, value } => {
-                    data.insert(key, value);
+                    data.insert(key, MemValue::Value(value));
                 }
                 WalEntry::Delete { key } => {
-                    data.remove(&key);
+                    data.insert(key, MemValue::Tombstone);
                 }
             }
         }
@@ -70,13 +76,16 @@ impl StorageEngine {
 
     /// Gets the value of a key from the storage engine. Returns `None` if the key does not exist.
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.data.get(key).map(|v| v.as_str())
+        self.data.get(key).and_then(|value| match value {
+            MemValue::Value(value) => Some(value.as_str()),
+            MemValue::Tombstone => None,
+        })
     }
 
     /// Deletes a key from the storage engine. Returns `true` if the key was deleted, `false` if the
     /// key did not exist.
     pub fn delete(&mut self, key: &str) -> Result<bool> {
-        if !self.data.contains_key(key) {
+        if matches!(self.data.get(key), None | Some(&MemValue::Tombstone)) {
             return Ok(false);
         }
 
@@ -111,10 +120,10 @@ impl StorageEngine {
     fn apply_wal(&mut self, entry: WalEntry) {
         match entry {
             WalEntry::Set { key, value } => {
-                self.data.insert(key, value);
+                self.data.insert(key, MemValue::Value(value));
             }
             WalEntry::Delete { key } => {
-                self.data.remove(&key);
+                self.data.insert(key, MemValue::Tombstone);
             }
         }
     }
