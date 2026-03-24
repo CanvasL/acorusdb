@@ -144,7 +144,10 @@ mod tests {
         },
     };
 
-    use super::StorageEngine;
+    use super::{
+        MemValue,
+        StorageEngine,
+    };
     use crate::{
         error::{
             AcorusError,
@@ -186,6 +189,70 @@ mod tests {
     }
 
     #[test]
+    fn delete_twice_returns_false_on_second_call() -> Result<()> {
+        let paths = TestPaths::new()?;
+        let mut engine = open_engine(&paths, usize::MAX)?;
+
+        engine.set("name", "fan")?;
+
+        assert!(engine.delete("name")?);
+        assert!(!engine.delete("name")?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn set_after_tombstone_revives_key_after_restart() -> Result<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine(&paths, usize::MAX)?;
+            engine.set("name", "fan")?;
+            assert!(engine.delete("name")?);
+            engine.set("name", "acorus")?;
+        }
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("name"), Some("acorus"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn restart_preserves_tombstone_from_wal() -> Result<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine(&paths, usize::MAX)?;
+            engine.set("name", "fan")?;
+            assert!(engine.delete("name")?);
+        }
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("name"), None);
+        assert!(matches!(engine.data.get("name"), Some(MemValue::Tombstone)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn compact_preserves_tombstone_after_restart() -> Result<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine(&paths, 0)?;
+            engine.set("name", "fan")?;
+            assert!(engine.delete("name")?);
+        }
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("name"), None);
+        assert!(matches!(engine.data.get("name"), Some(MemValue::Tombstone)));
+
+        Ok(())
+    }
+
+    #[test]
     fn compaction_persists_snapshot_and_clears_wal() -> Result<()> {
         let paths = TestPaths::new()?;
 
@@ -199,6 +266,40 @@ mod tests {
 
         let engine = open_engine(&paths, usize::MAX)?;
         assert_eq!(engine.get("color"), Some("blue"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn restart_keeps_sorted_iteration_order() -> Result<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine(&paths, usize::MAX)?;
+            engine.set("c", "3")?;
+            engine.set("a", "1")?;
+            engine.set("b", "2")?;
+        }
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(key_order(&engine), vec!["a", "b", "c"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn compact_then_restart_keeps_sorted_iteration_order() -> Result<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine(&paths, 0)?;
+            engine.set("c", "3")?;
+            engine.set("a", "1")?;
+            engine.set("b", "2")?;
+        }
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(key_order(&engine), vec!["a", "b", "c"]);
 
         Ok(())
     }
@@ -275,6 +376,10 @@ mod tests {
             paths.wal_path.as_path(),
             wal_compact_threshold_bytes,
         )
+    }
+
+    fn key_order(engine: &StorageEngine) -> Vec<&str> {
+        engine.data.keys().map(|key| key.as_str()).collect()
     }
 
     struct TestPaths {

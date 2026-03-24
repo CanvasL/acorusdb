@@ -151,6 +151,12 @@ mod tests {
         writer.write_all(b"DEL name\n").await?;
         assert_eq!(lines.next_line().await?, Some("1".to_string()));
 
+        writer.write_all(b"EXISTS name\n").await?;
+        assert_eq!(lines.next_line().await?, Some("0".to_string()));
+
+        writer.write_all(b"GET name\n").await?;
+        assert_eq!(lines.next_line().await?, Some("(nil)".to_string()));
+
         writer.write_all(b"EXIT\n").await?;
         assert_eq!(lines.next_line().await?, Some("BYE".to_string()));
         assert_eq!(lines.next_line().await?, None);
