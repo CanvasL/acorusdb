@@ -14,9 +14,15 @@ use std::{
     },
 };
 
-use crate::error::{
-    AcorusError,
-    Result,
+use crate::{
+    error::{
+        AcorusError,
+        Result,
+    },
+    fs_utils::{
+        ensure_parent_dir,
+        parent_dir_for_sync,
+    },
 };
 
 mod wal_prefix {
@@ -32,6 +38,8 @@ pub struct Wal {
 
 impl Wal {
     pub fn open(path: &Path) -> Result<Self> {
+        ensure_parent_dir(path)?;
+
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -126,10 +134,12 @@ impl Wal {
                 path: self.path.clone(),
                 source,
             })?;
-        self.file.write_all(b"\n").map_err(|source| AcorusError::WalWrite {
-            path: self.path.clone(),
-            source,
-        })?;
+        self.file
+            .write_all(b"\n")
+            .map_err(|source| AcorusError::WalWrite {
+                path: self.path.clone(),
+                source,
+            })?;
         // flush the file buffer to ensure the data is written to the OS
         self.file.flush().map_err(|source| AcorusError::WalWrite {
             path: self.path.clone(),
@@ -138,10 +148,12 @@ impl Wal {
         // and then call sync_all to ensure the data is flushed to disk.
         // This way we can guarantee that once append returns successfully,
         // the entry is safely stored in the WAL file, even in case of a crash.
-        self.file.sync_all().map_err(|source| AcorusError::WalWrite {
-            path: self.path.clone(),
-            source,
-        })?;
+        self.file
+            .sync_all()
+            .map_err(|source| AcorusError::WalWrite {
+                path: self.path.clone(),
+                source,
+            })?;
 
         self.size_bytes += line.len() + 1;
 
@@ -162,23 +174,24 @@ impl Wal {
             path: self.path.clone(),
             source,
         })?;
-        reset_file.sync_all().map_err(|source| AcorusError::WalReset {
-            path: self.path.clone(),
-            source,
-        })?;
-        if let Some(dir) = self.path.parent() {
-            let dir_path = dir.to_path_buf();
-            File::open(dir)
-                .map_err(|source| AcorusError::WalReset {
-                    path: dir_path.clone(),
-                    source,
-                })?
-                .sync_all()
-                .map_err(|source| AcorusError::WalReset {
-                    path: dir_path,
-                    source,
-                })?;
-        }
+        reset_file
+            .sync_all()
+            .map_err(|source| AcorusError::WalReset {
+                path: self.path.clone(),
+                source,
+            })?;
+        let dir = parent_dir_for_sync(&self.path);
+        let dir_path = dir.to_path_buf();
+        File::open(dir)
+            .map_err(|source| AcorusError::WalReset {
+                path: dir_path.clone(),
+                source,
+            })?
+            .sync_all()
+            .map_err(|source| AcorusError::WalReset {
+                path: dir_path,
+                source,
+            })?;
 
         self.file = OpenOptions::new()
             .create(true)

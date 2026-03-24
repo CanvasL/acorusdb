@@ -1,3 +1,4 @@
 /target
-acorusdb.wal
-acorusdb.snapshot
+data
+
+.DS_Store

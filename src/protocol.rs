@@ -1,8 +1,14 @@
 use std::io;
 
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::{
+    AsyncWrite,
+    AsyncWriteExt,
+};
 
-use crate::{command::Command, database::ExecuteResult};
+use crate::{
+    command::Command,
+    database::ExecuteResult,
+};
 
 pub const WELCOME_LINE: &str = "WELCOME AcorusDB";
 
@@ -230,7 +236,12 @@ fn single_arg(input: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ErrorResponse, Request, Usage, parse_request};
+    use super::{
+        ErrorResponse,
+        Request,
+        Usage,
+        parse_request,
+    };
     use crate::command::Command;
 
     #[test]

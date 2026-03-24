@@ -5,8 +5,8 @@ bind_addr = "127.0.0.1:7634"
 level = "info"
 
 [snapshot]
-path = "acorusdb.snapshot"
+path = "data/acorusdb.snapshot"
 
 [wal]
-path = "acorusdb.wal"
+path = "data/acorusdb.wal"
 compact_threshold_bytes = 1024

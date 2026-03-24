@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     path::Path,
 };
 
@@ -16,7 +16,7 @@ use crate::{
 /// It provides methods to set, get, and delete key-value pairs, as well as to compact the data by
 /// saving a new snapshot and clearing the WAL.
 pub struct StorageEngine {
-    data: HashMap<String, String>,
+    data: BTreeMap<String, String>,
     wal_compact_threshold_bytes: usize,
     snapshot: Snapshot,
     wal: Wal,

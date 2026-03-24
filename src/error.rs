@@ -18,6 +18,13 @@ pub enum AcorusError {
     #[error("failed to parse config file {path}: {message}", path = .path.display())]
     ConfigParse { path: PathBuf, message: String },
 
+    #[error("failed to create parent directory for {path}: {source}", path = .path.display())]
+    CreateParentDir {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
     #[error("failed to bind server to {addr}: {source}")]
     Bind {
         addr: String,

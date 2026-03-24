@@ -1,6 +1,4 @@
-use std::{
-    path::Path,
-};
+use std::path::Path;
 
 use tokio::sync::Mutex;
 
