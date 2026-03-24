@@ -8,10 +8,10 @@
 
 ## 第一阶段：先把当前引擎整理好
 
-- [ ] 把 [`src/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage_engine.rs) 里的内存结构从 `HashMap` 换成 `BTreeMap`。
-- [ ] 保持当前写路径不变，仍然是 `WAL -> memtable apply`。
-- [ ] 补测试，证明重启后和 compact 后的遍历顺序稳定。
-- [ ] 在引入磁盘有序表之前，先明确并写清楚 delete 的 tombstone 语义。
+- [x] 把 [`src/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage_engine.rs) 里的内存结构从 `HashMap` 换成 `BTreeMap`。
+- [x] 保持当前写路径不变，仍然是 `WAL -> memtable apply`。
+- [x] 补测试，证明重启后和 compact 后的遍历顺序稳定。
+- [x] 在引入磁盘有序表之前，先明确并写清楚 delete 的 tombstone 语义。
 
 ## 第二阶段：把 snapshot 演进成 SSTable V1
 
@@ -83,4 +83,4 @@
 
 ## 建议的下一步
 
-- [ ] 先从 `BTreeMap` memtable 和 tombstone 设计说明开始。
+- [ ] 开始第二阶段，把当前 snapshot 逐步演进成 SSTable V1。

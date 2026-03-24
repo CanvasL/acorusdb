@@ -27,7 +27,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Opening the snapshot file. If the file does not exist, it will be created.
+    /// Opens the snapshot path and ensures its parent directory exists.
     pub fn open(path: &Path) -> Result<Self> {
         ensure_parent_dir(path)?;
 
@@ -36,17 +36,17 @@ impl Snapshot {
         })
     }
 
-    /// Saving the current state to a snapshot file. This should be called periodically to prevent
-    /// the WAL from growing indefinitely.
-    pub fn save(&mut self, data: &BTreeMap<String, MemValue>) -> Result<()> {
+    /// Saves the current memtable to a snapshot file. Tombstones are persisted as part of the
+    /// snapshot so delete semantics survive compaction and restart.
+    pub fn save(&mut self, mem_table: &BTreeMap<String, MemValue>) -> Result<()> {
         let snapshot_path = self.path.clone();
         ensure_parent_dir(&snapshot_path)?;
 
         // 1. generate temp file path
         let tmp_path = snapshot_path.with_extension("snapshot.tmp");
 
-        // 2. serialize data
-        let bytes = rmp_serde::to_vec(data).map_err(|error| AcorusError::SnapshotEncode {
+        // 2. serialize the memtable
+        let bytes = rmp_serde::to_vec(mem_table).map_err(|error| AcorusError::SnapshotEncode {
             path: snapshot_path.clone(),
             message: error.to_string(),
         })?;
@@ -93,8 +93,7 @@ impl Snapshot {
         Ok(())
     }
 
-    /// Loading the snapshot from disk. This should be called during startup to restore the state
-    /// before replaying the WAL.
+    /// Loads the snapshot into the memtable before WAL replay during startup recovery.
     pub fn load(&mut self) -> Result<BTreeMap<String, MemValue>> {
         let snapshot_path = self.path.clone();
 
@@ -107,7 +106,7 @@ impl Snapshot {
             })?;
         }
 
-        // 2. check if snapshot file exists, if not return empty data
+        // 2. check if snapshot file exists, if not return an empty memtable
         if !snapshot_path.exists() {
             return Ok(BTreeMap::new());
         }
@@ -117,12 +116,12 @@ impl Snapshot {
             path: snapshot_path.clone(),
             source,
         })?;
-        let data: BTreeMap<String, MemValue> =
+        let mem_table: BTreeMap<String, MemValue> =
             rmp_serde::from_slice(&bytes).map_err(|error| AcorusError::SnapshotDecode {
                 path: snapshot_path,
                 message: error.to_string(),
             })?;
 
-        Ok(data)
+        Ok(mem_table)
     }
 }

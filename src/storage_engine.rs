@@ -18,19 +18,19 @@ pub enum MemValue {
     Tombstone,
 }
 
-/// The `StorageEngine` is responsible for managing the in-memory data, the snapshot, and the WAL.
-/// It provides methods to set, get, and delete key-value pairs, as well as to compact the data by
-/// saving a new snapshot and clearing the WAL.
+/// The `StorageEngine` owns the in-memory memtable together with the snapshot and WAL files.
+/// It is responsible for applying writes, serving reads, recovering state on startup, and
+/// compacting the current memtable into a snapshot.
 pub struct StorageEngine {
-    data: BTreeMap<String, MemValue>,
+    mem_table: BTreeMap<String, MemValue>,
     wal_compact_threshold_bytes: usize,
     snapshot: Snapshot,
     wal: Wal,
 }
 
 impl StorageEngine {
-    /// Opening the storage engine by loading the snapshot and replaying the WAL. This should be
-    /// called during startup to restore the state.
+    /// Opens the storage engine by loading the snapshot and replaying the WAL into the memtable.
+    /// This is the startup recovery path.
     pub fn open(
         snapshot_path: &Path,
         wal_path: &Path,
@@ -39,29 +39,29 @@ impl StorageEngine {
         let mut snapshot = Snapshot::open(snapshot_path)?;
         let mut wal = Wal::open(wal_path)?;
 
-        let mut data = snapshot.load()?;
+        let mut mem_table = snapshot.load()?;
 
         for entry in wal.read_entries()? {
             match entry {
                 WalEntry::Set { key, value } => {
-                    data.insert(key, MemValue::Value(value));
+                    mem_table.insert(key, MemValue::Value(value));
                 }
                 WalEntry::Delete { key } => {
-                    data.insert(key, MemValue::Tombstone);
+                    mem_table.insert(key, MemValue::Tombstone);
                 }
             }
         }
 
         Ok(Self {
-            data,
+            mem_table,
             snapshot,
             wal,
             wal_compact_threshold_bytes,
         })
     }
 
-    /// Sets a key-value pair in the storage engine. This will append a new entry to the WAL and
-    /// apply the change to the in-memory data.
+    /// Sets a key-value pair by appending to the WAL first and then applying the value to the
+    /// memtable.
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         let entry = WalEntry::Set {
             key: key.into(),
@@ -74,18 +74,19 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Gets the value of a key from the storage engine. Returns `None` if the key does not exist.
+    /// Gets the visible value of a key from the memtable. Returns `None` when the key is missing
+    /// or currently marked as a tombstone.
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.data.get(key).and_then(|value| match value {
+        self.mem_table.get(key).and_then(|value| match value {
             MemValue::Value(value) => Some(value.as_str()),
             MemValue::Tombstone => None,
         })
     }
 
-    /// Deletes a key from the storage engine. Returns `true` if the key was deleted, `false` if the
-    /// key did not exist.
+    /// Marks a key as deleted in the memtable by writing a tombstone. Returns `true` only when the
+    /// key previously held a visible value.
     pub fn delete(&mut self, key: &str) -> Result<bool> {
-        if matches!(self.data.get(key), None | Some(&MemValue::Tombstone)) {
+        if matches!(self.mem_table.get(key), None | Some(&MemValue::Tombstone)) {
             return Ok(false);
         }
 
@@ -97,16 +98,15 @@ impl StorageEngine {
         Ok(true)
     }
 
-    /// Saving the current state to a snapshot and clearing the WAL.
+    /// Persists the current memtable as a snapshot and clears the WAL.
     fn compact(&mut self) -> Result<()> {
-        self.snapshot.save(&self.data)?;
+        self.snapshot.save(&self.mem_table)?;
         self.wal.reset()?;
         Ok(())
     }
 
-    /// Checks if the WAL size exceeds the compact threshold, and if so, triggers a compaction. This
-    /// should be called after every write operation to ensure that the WAL does not grow
-    /// indefinitely.
+    /// Checks whether the WAL size exceeds the compact threshold and, if so, compacts the current
+    /// memtable.
     fn maybe_compact(&mut self) {
         if self.wal.should_compact(self.wal_compact_threshold_bytes)
             && let Err(err) = self.compact()
@@ -115,15 +115,15 @@ impl StorageEngine {
         }
     }
 
-    /// Applies a WAL entry to the in-memory data. This is called after appending a new entry to the
-    /// WAL, and also during startup when replaying the WAL.
+    /// Applies a WAL entry to the memtable. This is used both on the live write path and during
+    /// startup recovery.
     fn apply_wal(&mut self, entry: WalEntry) {
         match entry {
             WalEntry::Set { key, value } => {
-                self.data.insert(key, MemValue::Value(value));
+                self.mem_table.insert(key, MemValue::Value(value));
             }
             WalEntry::Delete { key } => {
-                self.data.insert(key, MemValue::Tombstone);
+                self.mem_table.insert(key, MemValue::Tombstone);
             }
         }
     }
@@ -230,7 +230,10 @@ mod tests {
 
         let engine = open_engine(&paths, usize::MAX)?;
         assert_eq!(engine.get("name"), None);
-        assert!(matches!(engine.data.get("name"), Some(MemValue::Tombstone)));
+        assert!(matches!(
+            engine.mem_table.get("name"),
+            Some(MemValue::Tombstone)
+        ));
 
         Ok(())
     }
@@ -247,7 +250,10 @@ mod tests {
 
         let engine = open_engine(&paths, usize::MAX)?;
         assert_eq!(engine.get("name"), None);
-        assert!(matches!(engine.data.get("name"), Some(MemValue::Tombstone)));
+        assert!(matches!(
+            engine.mem_table.get("name"),
+            Some(MemValue::Tombstone)
+        ));
 
         Ok(())
     }
@@ -379,7 +385,7 @@ mod tests {
     }
 
     fn key_order(engine: &StorageEngine) -> Vec<&str> {
-        engine.data.keys().map(|key| key.as_str()).collect()
+        engine.mem_table.keys().map(|key| key.as_str()).collect()
     }
 
     struct TestPaths {

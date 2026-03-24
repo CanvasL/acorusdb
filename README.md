@@ -203,6 +203,23 @@ load snapshot
 - WAL 最后一行损坏会被视作可能的 torn write 并忽略
 - WAL 中间行损坏会作为错误上报
 
+## Tombstone 设计
+
+当前项目已经把 delete 语义显式建模成 tombstone，并为后续 mini-LSM 演进做准备。
+
+当前规则如下：
+
+1. tombstone 表示“这个 key 被逻辑删除”，而不是“系统里从未出现过这个 key”。
+2. 在 [`src/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage_engine.rs) 中，内存表 `mem_table` 使用 `MemValue::Tombstone` 表示删除状态。
+3. `GET` 遇到 tombstone 时返回不存在，也就是协议层的 `(nil)`。
+4. `EXISTS` 遇到 tombstone 时返回 `false`，也就是协议层的 `0`。
+5. 对已经是 tombstone 的 key 再执行一次 `DEL`，返回 `false`。
+6. `SET` 可以覆盖 tombstone，使同一个 key 重新生效。
+7. WAL 中的 `Delete` 在恢复时会重建成 tombstone，而不是直接把 key 从内存表里移除。
+8. 当前 snapshot 也会持久化 tombstone，保证 compact 和重启后删除语义不丢失。
+9. 当前 compact 不会主动清理 tombstone，它只是把当前 `mem_table` 状态落盘并清空 WAL。
+10. 未来进入 SSTable / LSM 阶段后，tombstone 会继续承担“遮蔽旧层旧值”的职责，并在合适的 compaction 时机清理。
+
 ## 错误处理
 
 项目内部错误统一放在 `AcorusError` 中，当前已经区分了这些主要场景：
@@ -239,8 +256,12 @@ cargo test
 - 协议解析
 - WAL 编解码
 - `set/delete/restart` 恢复
+- tombstone 重启恢复与重复删除语义
+- `SET -> DEL -> SET` 之后的 key 复活语义
 - compact 后恢复
+- compact 后 tombstone 保留
 - `snapshot + wal` 叠加恢复
+- 重启后和 compact 后的 key 顺序稳定性
 - WAL 损坏边界
 - TCP 会话端到端读写
 - shutdown 时客户端收到 `BYE`
