@@ -1,16 +1,12 @@
 mod cli;
 
-use acorusdb::{
-    config::Config,
-    error::Result,
-    server,
-};
+use acorusdb::{config::Config, error::AcorusResult, server};
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::Cli;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> AcorusResult<()> {
     let cli = Cli::parse_args();
     let (config, loaded_from_file) = Config::load(cli.config.as_path())?;
 

@@ -1,7 +1,4 @@
-use std::{
-    io,
-    path::PathBuf,
-};
+use std::{io, path::PathBuf};
 
 #[derive(thiserror::Error, Debug)]
 pub enum AcorusError {
@@ -70,25 +67,25 @@ pub enum AcorusError {
         message: String,
     },
 
-    #[error("failed to encode snapshot {path}: {message}", path = .path.display())]
-    SnapshotEncode { path: PathBuf, message: String },
+    #[error("failed to encode sstable {path}: {message}", path = .path.display())]
+    SSTableEncode { path: PathBuf, message: String },
 
-    #[error("failed to write snapshot {path}: {source}", path = .path.display())]
-    SnapshotWrite {
+    #[error("failed to write sstable {path}: {source}", path = .path.display())]
+    SSTableWrite {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
 
-    #[error("failed to read snapshot {path}: {source}", path = .path.display())]
-    SnapshotRead {
+    #[error("failed to read sstable {path}: {source}", path = .path.display())]
+    SSTableRead {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
 
-    #[error("failed to decode snapshot {path}: {message}", path = .path.display())]
-    SnapshotDecode { path: PathBuf, message: String },
+    #[error("failed to decode sstable {path}: {message}", path = .path.display())]
+    SSTableDecode { path: PathBuf, message: String },
 }
 
-pub type Result<T> = std::result::Result<T, AcorusError>;
+pub type AcorusResult<T> = std::result::Result<T, AcorusError>;

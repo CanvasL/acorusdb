@@ -7,6 +7,6 @@ pub mod protocol;
 pub mod server;
 pub mod session;
 pub mod shutdown;
-pub mod snapshot;
+pub mod sstable;
 pub mod storage_engine;
 pub mod wal;

@@ -1,7 +1,4 @@
-use crate::error::{
-    AcorusError,
-    Result,
-};
+use crate::error::{AcorusError, AcorusResult};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ShutdownSignal {
@@ -18,13 +15,10 @@ impl ShutdownSignal {
     }
 }
 
-pub async fn wait_for_shutdown_signal() -> Result<ShutdownSignal> {
+pub async fn wait_for_shutdown_signal() -> AcorusResult<ShutdownSignal> {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{
-            SignalKind,
-            signal,
-        };
+        use tokio::signal::unix::{SignalKind, signal};
 
         let mut sigterm = signal(SignalKind::terminate()).map_err(AcorusError::ShutdownSignal)?;
 

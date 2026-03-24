@@ -4,8 +4,8 @@ bind_addr = "127.0.0.1:7634"
 [logging]
 level = "info"
 
-[snapshot]
-path = "data/acorusdb.snapshot"
+[sstable]
+path = "data/acorusdb.sst"
 
 [wal]
 path = "data/acorusdb.wal"

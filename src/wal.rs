@@ -1,28 +1,12 @@
 use std::{
-    fs::{
-        File,
-        OpenOptions,
-    },
-    io::{
-        BufRead,
-        BufReader,
-        Write,
-    },
-    path::{
-        Path,
-        PathBuf,
-    },
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, Write},
+    path::{Path, PathBuf},
 };
 
 use crate::{
-    error::{
-        AcorusError,
-        Result,
-    },
-    fs_utils::{
-        ensure_parent_dir,
-        parent_dir_for_sync,
-    },
+    error::{AcorusError, AcorusResult},
+    fs_utils::{ensure_parent_dir, parent_dir_for_sync},
 };
 
 mod wal_prefix {
@@ -37,7 +21,7 @@ pub struct Wal {
 }
 
 impl Wal {
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path) -> AcorusResult<Self> {
         ensure_parent_dir(path)?;
 
         let file = OpenOptions::new()
@@ -63,7 +47,7 @@ impl Wal {
         })
     }
 
-    pub fn read_entries(&mut self) -> Result<Vec<WalEntry>> {
+    pub fn read_entries(&mut self) -> AcorusResult<Vec<WalEntry>> {
         let read_file = File::open(&self.path).map_err(|source| AcorusError::WalRead {
             path: self.path.clone(),
             source,
@@ -126,7 +110,7 @@ impl Wal {
         Ok(entries)
     }
 
-    pub fn append(&mut self, entry: &WalEntry) -> Result<()> {
+    pub fn append(&mut self, entry: &WalEntry) -> AcorusResult<()> {
         let line = entry.to_line();
         self.file
             .write_all(line.as_bytes())
@@ -160,7 +144,7 @@ impl Wal {
         Ok(())
     }
 
-    pub fn reset(&mut self) -> Result<()> {
+    pub fn reset(&mut self) -> AcorusResult<()> {
         let mut reset_file = OpenOptions::new()
             .create(true)
             .write(true)

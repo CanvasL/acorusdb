@@ -1,23 +1,16 @@
 use std::sync::Arc;
 
-use tokio::{
-    net::TcpListener,
-    sync::broadcast,
-    task::JoinSet,
-};
+use tokio::{net::TcpListener, sync::broadcast, task::JoinSet};
 
 use crate::{
     config::Config,
     database::Database,
-    error::{
-        AcorusError,
-        Result,
-    },
+    error::{AcorusError, AcorusResult},
     session,
     shutdown::wait_for_shutdown_signal,
 };
 
-pub async fn run(config: Config) -> Result<()> {
+pub async fn run(config: Config) -> AcorusResult<()> {
     let bind_addr = config.server.bind_addr.clone();
     let listener = TcpListener::bind(&bind_addr)
         .await
@@ -30,7 +23,7 @@ pub async fn run(config: Config) -> Result<()> {
     tracing::info!(%addr, "acorusdb listening");
 
     let database = Arc::new(Database::open(
-        config.snapshot.path.as_path(),
+        config.sstable.path.as_path(),
         config.wal.path.as_path(),
         config.wal.compact_threshold_bytes,
     )?);

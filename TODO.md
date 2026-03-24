@@ -13,22 +13,23 @@
 - [x] 补测试，证明重启后和 compact 后的遍历顺序稳定。
 - [x] 在引入磁盘有序表之前，先明确并写清楚 delete 的 tombstone 语义。
 
-## 第二阶段：把 snapshot 演进成 SSTable V1
+## 第二阶段：把当前单文件落盘结构演进成 SSTable V1
 
-- [ ] 把 [`src/snapshot.rs`](/Users/fan/MyProjects/acorusdb/src/snapshot.rs) 从“整张表序列化”改成“有序、不可变表文件”。
+- [x] 把主路径代码、配置和文档里的 `snapshot` 命名逐步退场，统一成 `sstable`。
+- [ ] 把 [`src/sstable.rs`](/Users/fan/MyProjects/acorusdb/src/sstable.rs) 从“整张表序列化”继续演进成“更像 SSTable 的有序、不可变表文件”。
 - [ ] 先定义一个足够简单的 SSTable 文件格式：
   - [ ] 文件头
   - [ ] 按 key 排序的记录
   - [ ] delete 对应的 tombstone 标记
 - [ ] 第一版先保证顺序可读和正确性，不着急做索引。
 - [ ] 补测试覆盖：
-  - [ ] 写出有序表
-  - [ ] 读取有序表
-  - [ ] 正确识别 tombstone
+  - [x] 写出有序表
+  - [x] 读取有序表
+  - [x] 正确识别 tombstone
 
 ## 第三阶段：引入 memtable flush
 
-- [ ] 在概念和代码层都把当前 snapshot 更明确地转成 SSTable 文件。
+- [ ] 在概念和代码层都把当前单文件 SSTable 更明确地转成 flush 产物。
 - [ ] 当 memtable 达到阈值时触发 flush。
 - [ ] flush 流程至少包含：
   - [ ] 写出新的不可变 SSTable
@@ -49,7 +50,7 @@
 
 ## 第五阶段：Compaction V1
 
-- [ ] 用 SSTable merge compaction 替代现在“snapshot + 清空 WAL”的 compact 思路。
+- [ ] 用 SSTable merge compaction 替代现在“单文件 SSTable + 清空 WAL”的 compact 思路。
 - [ ] 第一版只做手动触发或阈值触发，不做后台线程调度。
 - [ ] 支持把新旧 SSTable merge 成一个新表。
 - [ ] 在安全条件下丢弃旧值和无效 tombstone。
@@ -83,4 +84,4 @@
 
 ## 建议的下一步
 
-- [ ] 开始第二阶段，把当前 snapshot 逐步演进成 SSTable V1。
+- [ ] 继续推进第二阶段，把当前单文件 SSTable 逐步演进成 SSTable V1。

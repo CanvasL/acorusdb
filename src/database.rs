@@ -2,11 +2,7 @@ use std::path::Path;
 
 use tokio::sync::Mutex;
 
-use crate::{
-    command::Command,
-    error::Result,
-    storage_engine::StorageEngine,
-};
+use crate::{command::Command, error::AcorusResult, storage_engine::StorageEngine};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecuteResult {
@@ -22,20 +18,20 @@ pub struct Database {
 
 impl Database {
     pub fn open(
-        snapshot_path: &Path,
+        sstable_path: &Path,
         wal_path: &Path,
         wal_compact_threshold_bytes: usize,
-    ) -> Result<Self> {
+    ) -> AcorusResult<Self> {
         Ok(Self {
             storage_engine: Mutex::new(StorageEngine::open(
-                snapshot_path,
+                sstable_path,
                 wal_path,
                 wal_compact_threshold_bytes,
             )?),
         })
     }
 
-    pub async fn execute(&self, command: Command) -> Result<ExecuteResult> {
+    pub async fn execute(&self, command: Command) -> AcorusResult<ExecuteResult> {
         let mut storage_engine = self.storage_engine.lock().await;
 
         match command {

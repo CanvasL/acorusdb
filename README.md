@@ -1,5 +1,9 @@
 # AcorusDB
 
+<p align="center">
+  <img src="docs/assets/acorus-logo.png" alt="AcorusDB logo" width="520" />
+</p>
+
 一个基于 Rust 和 Tokio 实现的轻量级 TCP Key-Value 数据库项目。
 
 当前项目已经具备一条完整的最小闭环：
@@ -7,7 +11,7 @@
 - 文本行协议
 - 内存 KV 存储
 - WAL 持久化
-- snapshot 恢复
+- SSTable 恢复
 - 自动 compact
 - tracing 日志
 - 配置文件加载
@@ -28,7 +32,7 @@
   - `QUIT`
 - 支持 `value` 中包含空格。
 - `key` 当前不允许包含空白字符。
-- 启动时会先加载 snapshot，再回放 WAL。
+- 启动时会先加载 SSTable，再回放 WAL。
 - WAL 达到阈值后会触发 compact。
 - 收到 `Ctrl+C` 或 `SIGTERM` 后会停止接收新连接，并通知现有连接退出。
 
@@ -47,11 +51,11 @@
 - `src/database.rs`
   - 命令执行入口。
 - `src/storage_engine.rs`
-  - 内存状态、snapshot、WAL 和 compact 的协调层。
+  - 内存状态、SSTable、WAL 和 compact 的协调层。
 - `src/wal.rs`
   - WAL 读写、恢复和 reset。
-- `src/snapshot.rs`
-  - snapshot 保存和加载。
+- `src/sstable.rs`
+  - 当前单文件 SSTable 的保存和加载。
 - `src/config.rs`
   - TOML 配置读取。
 - `src/error.rs`
@@ -98,8 +102,8 @@ bind_addr = "127.0.0.1:7634"
 [logging]
 level = "info"
 
-[snapshot]
-path = "acorusdb.snapshot"
+[sstable]
+path = "acorusdb.sst"
 
 [wal]
 path = "acorusdb.wal"
@@ -112,8 +116,8 @@ compact_threshold_bytes = 1024
   - TCP 监听地址。
 - `logging.level`
   - tracing 日志级别，例如 `trace`、`debug`、`info`、`warn`、`error`。
-- `snapshot.path`
-  - snapshot 文件路径。
+- `sstable.path`
+  - SSTable 文件路径。
 - `wal.path`
   - WAL 文件路径。
 - `wal.compact_threshold_bytes`
@@ -190,7 +194,7 @@ client command
 当前恢复路径大致是：
 
 ```text
-load snapshot
+load sstable
   -> replay WAL
   -> rebuild in-memory state
 ```
@@ -198,7 +202,7 @@ load snapshot
 当前实现特点：
 
 - WAL 每次写入后会 `flush + sync_all`
-- snapshot 保存会走临时文件、rename 和目录同步
+- SSTable 写出会走临时文件、rename 和目录同步
 - WAL reset 也做了同步处理
 - WAL 最后一行损坏会被视作可能的 torn write 并忽略
 - WAL 中间行损坏会作为错误上报
@@ -216,7 +220,7 @@ load snapshot
 5. 对已经是 tombstone 的 key 再执行一次 `DEL`，返回 `false`。
 6. `SET` 可以覆盖 tombstone，使同一个 key 重新生效。
 7. WAL 中的 `Delete` 在恢复时会重建成 tombstone，而不是直接把 key 从内存表里移除。
-8. 当前 snapshot 也会持久化 tombstone，保证 compact 和重启后删除语义不丢失。
+8. 当前 SSTable 也会持久化 tombstone，保证 compact 和重启后删除语义不丢失。
 9. 当前 compact 不会主动清理 tombstone，它只是把当前 `mem_table` 状态落盘并清空 WAL。
 10. 未来进入 SSTable / LSM 阶段后，tombstone 会继续承担“遮蔽旧层旧值”的职责，并在合适的 compaction 时机清理。
 
@@ -229,7 +233,7 @@ load snapshot
 - shutdown 信号安装失败
 - WAL 打开、读取、写入、reset 失败
 - WAL 损坏
-- snapshot 编码、写入、读取、解码失败
+- SSTable 编码、写入、读取、解码失败
 
 协议错误单独保留在 `protocol` 层，不和内部运行时错误混在一起。
 
@@ -260,7 +264,8 @@ cargo test
 - `SET -> DEL -> SET` 之后的 key 复活语义
 - compact 后恢复
 - compact 后 tombstone 保留
-- `snapshot + wal` 叠加恢复
+- `sstable + wal` 叠加恢复
+- SSTable 直接读写、排序和 tombstone 保留
 - 重启后和 compact 后的 key 顺序稳定性
 - WAL 损坏边界
 - TCP 会话端到端读写
@@ -270,7 +275,7 @@ cargo test
 
 - 还不是 RESP 协议
 - 还不是 Redis 客户端兼容实现
-- 当前 snapshot 还不是 SSTable
+- 当前 SSTable 还只是单文件全量落盘版本
 - 当前存储结构还不是 LSM Tree
 - 还没有 manifest、Bloom filter、后台 compaction 等能力
 
@@ -280,6 +285,5 @@ cargo test
 
 核心方向是把当前存储引擎逐步演进成一个 mini-LSM：
 
-- 先把 memtable 改成 `BTreeMap`
-- 再把 snapshot 演进成 SSTable
+- 继续把当前单文件 SSTable 演进成更像真正 SSTable 的磁盘格式
 - 然后支持 flush、多表读和 merge compaction

@@ -1,24 +1,19 @@
 use std::{
     fs,
-    path::{
-        Path,
-        PathBuf,
-    },
+    path::{Path, PathBuf},
 };
 
 use serde::Deserialize;
 
-use crate::error::{
-    AcorusError,
-    Result,
-};
+use crate::error::{AcorusError, AcorusResult};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub server: ServerConfig,
     pub logging: LoggingConfig,
-    pub snapshot: SnapshotConfig,
+    #[serde(alias = "snapshot")]
+    pub sstable: SSTableConfig,
     pub wal: WalConfig,
 }
 
@@ -52,14 +47,14 @@ impl Default for LoggingConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct SnapshotConfig {
+pub struct SSTableConfig {
     pub path: PathBuf,
 }
 
-impl Default for SnapshotConfig {
+impl Default for SSTableConfig {
     fn default() -> Self {
         Self {
-            path: PathBuf::from("acorusdb.snapshot"),
+            path: PathBuf::from("acorusdb.sst"),
         }
     }
 }
@@ -83,7 +78,7 @@ impl Default for WalConfig {
 impl Config {
     /// Loads the configuration from a TOML file. If the file does not exist, returns the default
     /// configuration.
-    pub fn load(path: &Path) -> Result<(Self, bool)> {
+    pub fn load(path: &Path) -> AcorusResult<(Self, bool)> {
         if !path.exists() {
             return Ok((Self::default(), false));
         }

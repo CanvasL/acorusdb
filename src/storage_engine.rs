@@ -1,45 +1,39 @@
-use std::{
-    collections::BTreeMap,
-    path::Path,
-};
+use std::{collections::BTreeMap, path::Path};
 
 use crate::{
-    error::Result,
-    snapshot::Snapshot,
-    wal::{
-        Wal,
-        WalEntry,
-    },
+    error::AcorusResult,
+    sstable::SSTable,
+    wal::{Wal, WalEntry},
 };
 
-#[derive(PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MemValue {
     Value(String),
     Tombstone,
 }
 
-/// The `StorageEngine` owns the in-memory memtable together with the snapshot and WAL files.
+/// The `StorageEngine` owns the in-memory memtable together with the SSTable and WAL files.
 /// It is responsible for applying writes, serving reads, recovering state on startup, and
-/// compacting the current memtable into a snapshot.
+/// compacting the current memtable into an SSTable.
 pub struct StorageEngine {
     mem_table: BTreeMap<String, MemValue>,
     wal_compact_threshold_bytes: usize,
-    snapshot: Snapshot,
+    sstable: SSTable,
     wal: Wal,
 }
 
 impl StorageEngine {
-    /// Opens the storage engine by loading the snapshot and replaying the WAL into the memtable.
+    /// Opens the storage engine by loading the SSTable and replaying the WAL into the memtable.
     /// This is the startup recovery path.
     pub fn open(
-        snapshot_path: &Path,
+        sstable_path: &Path,
         wal_path: &Path,
         wal_compact_threshold_bytes: usize,
-    ) -> Result<Self> {
-        let mut snapshot = Snapshot::open(snapshot_path)?;
+    ) -> AcorusResult<Self> {
+        let sstable = SSTable::open(sstable_path)?;
         let mut wal = Wal::open(wal_path)?;
 
-        let mut mem_table = snapshot.load()?;
+        let mut mem_table = sstable.load_to_mem_table()?;
 
         for entry in wal.read_entries()? {
             match entry {
@@ -54,7 +48,7 @@ impl StorageEngine {
 
         Ok(Self {
             mem_table,
-            snapshot,
+            sstable,
             wal,
             wal_compact_threshold_bytes,
         })
@@ -62,7 +56,7 @@ impl StorageEngine {
 
     /// Sets a key-value pair by appending to the WAL first and then applying the value to the
     /// memtable.
-    pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
+    pub fn set(&mut self, key: &str, value: &str) -> AcorusResult<()> {
         let entry = WalEntry::Set {
             key: key.into(),
             value: value.into(),
@@ -85,7 +79,7 @@ impl StorageEngine {
 
     /// Marks a key as deleted in the memtable by writing a tombstone. Returns `true` only when the
     /// key previously held a visible value.
-    pub fn delete(&mut self, key: &str) -> Result<bool> {
+    pub fn delete(&mut self, key: &str) -> AcorusResult<bool> {
         if matches!(self.mem_table.get(key), None | Some(&MemValue::Tombstone)) {
             return Ok(false);
         }
@@ -98,9 +92,9 @@ impl StorageEngine {
         Ok(true)
     }
 
-    /// Persists the current memtable as a snapshot and clears the WAL.
-    fn compact(&mut self) -> Result<()> {
-        self.snapshot.save(&self.mem_table)?;
+    /// Persists the current memtable as an SSTable and clears the WAL.
+    fn compact(&mut self) -> AcorusResult<()> {
+        self.sstable.write_from_mem_table(&self.mem_table)?;
         self.wal.reset()?;
         Ok(())
     }
@@ -134,30 +128,18 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        sync::atomic::{
-            AtomicU64,
-            Ordering,
-        },
-        time::{
-            SystemTime,
-            UNIX_EPOCH,
-        },
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{
-        MemValue,
-        StorageEngine,
-    };
+    use super::{MemValue, StorageEngine};
     use crate::{
-        error::{
-            AcorusError,
-            Result,
-        },
+        error::{AcorusError, AcorusResult},
         wal::WalEntry,
     };
 
     #[test]
-    fn recovers_value_from_wal_after_restart() -> Result<()> {
+    fn recovers_value_from_wal_after_restart() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
         {
@@ -173,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn recovers_delete_from_wal_after_restart() -> Result<()> {
+    fn recovers_delete_from_wal_after_restart() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
         {
@@ -189,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_twice_returns_false_on_second_call() -> Result<()> {
+    fn delete_twice_returns_false_on_second_call() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let mut engine = open_engine(&paths, usize::MAX)?;
 
@@ -202,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn set_after_tombstone_revives_key_after_restart() -> Result<()> {
+    fn set_after_tombstone_revives_key_after_restart() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
         {
@@ -219,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_preserves_tombstone_from_wal() -> Result<()> {
+    fn restart_preserves_tombstone_from_wal() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
         {
@@ -239,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_preserves_tombstone_after_restart() -> Result<()> {
+    fn compact_preserves_tombstone_after_restart() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
         {
@@ -259,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_persists_snapshot_and_clears_wal() -> Result<()> {
+    fn compaction_persists_sstable_and_clears_wal() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
         {
@@ -267,7 +249,7 @@ mod tests {
             engine.set("color", "blue")?;
         }
 
-        assert!(paths.snapshot_path.exists());
+        assert!(paths.sstable_path.exists());
         assert_eq!(fs::metadata(&paths.wal_path)?.len(), 0);
 
         let engine = open_engine(&paths, usize::MAX)?;
@@ -277,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_keeps_sorted_iteration_order() -> Result<()> {
+    fn restart_keeps_sorted_iteration_order() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
         {
@@ -294,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_then_restart_keeps_sorted_iteration_order() -> Result<()> {
+    fn compact_then_restart_keeps_sorted_iteration_order() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
         {
@@ -311,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn replays_wal_on_top_of_snapshot_during_recovery() -> Result<()> {
+    fn replays_wal_on_top_of_sstable_during_recovery() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
         {
@@ -336,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_malformed_last_wal_line_during_recovery() -> Result<()> {
+    fn ignores_malformed_last_wal_line_during_recovery() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let valid = WalEntry::Set {
             key: "name".into(),
@@ -353,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_non_final_wal_line_during_recovery() -> Result<()> {
+    fn rejects_malformed_non_final_wal_line_during_recovery() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let first = WalEntry::Set {
             key: "first".into(),
@@ -376,9 +358,12 @@ mod tests {
         Ok(())
     }
 
-    fn open_engine(paths: &TestPaths, wal_compact_threshold_bytes: usize) -> Result<StorageEngine> {
+    fn open_engine(
+        paths: &TestPaths,
+        wal_compact_threshold_bytes: usize,
+    ) -> AcorusResult<StorageEngine> {
         StorageEngine::open(
-            paths.snapshot_path.as_path(),
+            paths.sstable_path.as_path(),
             paths.wal_path.as_path(),
             wal_compact_threshold_bytes,
         )
@@ -390,12 +375,12 @@ mod tests {
 
     struct TestPaths {
         root_dir: PathBuf,
-        snapshot_path: PathBuf,
+        sstable_path: PathBuf,
         wal_path: PathBuf,
     }
 
     impl TestPaths {
-        fn new() -> Result<Self> {
+        fn new() -> AcorusResult<Self> {
             static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
             let timestamp = SystemTime::now()
@@ -411,7 +396,7 @@ mod tests {
             fs::create_dir_all(&root_dir)?;
 
             Ok(Self {
-                snapshot_path: root_dir.join("data.snapshot"),
+                sstable_path: root_dir.join("data.sst"),
                 wal_path: root_dir.join("data.wal"),
                 root_dir,
             })

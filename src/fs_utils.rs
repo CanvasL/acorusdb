@@ -1,12 +1,6 @@
-use std::{
-    fs,
-    path::Path,
-};
+use std::{fs, path::Path};
 
-use crate::error::{
-    AcorusError,
-    Result,
-};
+use crate::error::{AcorusError, AcorusResult};
 
 pub fn parent_dir_for_sync(path: &Path) -> &Path {
     path.parent()
@@ -14,7 +8,7 @@ pub fn parent_dir_for_sync(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-pub fn ensure_parent_dir(path: &Path) -> Result<()> {
+pub fn ensure_parent_dir(path: &Path) -> AcorusResult<()> {
     let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -31,29 +25,17 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::{
-        path::{
-            Path,
-            PathBuf,
-        },
-        sync::atomic::{
-            AtomicU64,
-            Ordering,
-        },
-        time::{
-            SystemTime,
-            UNIX_EPOCH,
-        },
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{
-        ensure_parent_dir,
-        parent_dir_for_sync,
-    };
+    use super::{ensure_parent_dir, parent_dir_for_sync};
 
     #[test]
     fn uses_current_directory_for_relative_file_path() {
         assert_eq!(
-            parent_dir_for_sync(Path::new("acorusdb.snapshot")),
+            parent_dir_for_sync(Path::new("acorusdb.sst")),
             Path::new(".")
         );
     }
@@ -61,7 +43,7 @@ mod tests {
     #[test]
     fn keeps_explicit_parent_directory() {
         assert_eq!(
-            parent_dir_for_sync(Path::new("data/acorusdb.snapshot")),
+            parent_dir_for_sync(Path::new("data/acorusdb.sst")),
             Path::new("data")
         );
     }
@@ -79,7 +61,7 @@ mod tests {
             "acorusdb-fs-utils-tests-{}-{timestamp}-{sequence}",
             std::process::id()
         ));
-        let file_path: PathBuf = root_dir.join("nested/data/acorusdb.snapshot");
+        let file_path: PathBuf = root_dir.join("nested/data/acorusdb.sst");
 
         ensure_parent_dir(&file_path).expect("parent directory should be created");
 
