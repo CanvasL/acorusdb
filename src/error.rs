@@ -63,10 +63,10 @@ pub enum AcorusError {
         source: io::Error,
     },
 
-    #[error("corrupted WAL file {path} at line {line}: {message}", path = .path.display())]
+    #[error("corrupted WAL file {path} at {location}: {message}", path = .path.display())]
     CorruptedWal {
         path: PathBuf,
-        line: usize,
+        location: String,
         message: String,
     },
 
@@ -87,8 +87,12 @@ pub enum AcorusError {
         source: io::Error,
     },
 
-    #[error("failed to decode sstable {path}: {message}", path = .path.display())]
-    SSTableDecode { path: PathBuf, message: String },
+    #[error("corrupted sstable {path} at {location}: {message}", path = .path.display())]
+    CorruptedSSTable {
+        path: PathBuf,
+        location: String,
+        message: String,
+    },
 }
 
 pub type AcorusResult<T> = std::result::Result<T, AcorusError>;

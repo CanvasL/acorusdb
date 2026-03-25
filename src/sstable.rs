@@ -4,6 +4,13 @@ use std::{
         self,
         File,
     },
+    io::{
+        self,
+        BufReader,
+        BufWriter,
+        Read,
+        Write,
+    },
     path::{
         Path,
         PathBuf,
@@ -22,19 +29,233 @@ use crate::{
     storage_engine::MemValue,
 };
 
-const SSTABLE_FILE_TMP_EXTENSION: &str = "sst.tmp";
+mod format {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum ValueTag {
+        Value,
+        Tombstone,
+    }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TableEntry {
-    pub key: String,
-    pub value: MemValue,
+    impl ValueTag {
+        pub(super) const fn to_byte(self) -> u8 {
+            match self {
+                Self::Value => 0,
+                Self::Tombstone => 1,
+            }
+        }
+
+        pub(super) const fn from_byte(byte: u8) -> Option<Self> {
+            match byte {
+                0 => Some(Self::Value),
+                1 => Some(Self::Tombstone),
+                _ => None,
+            }
+        }
+    }
+
+    pub(super) const MAGIC: [u8; 4] = *b"ACSS";
+    pub(super) const VERSION: u8 = 1;
 }
 
 pub struct SSTable {
     path: PathBuf,
 }
 
+struct SstableWriter<'a, W> {
+    path: &'a Path,
+    writer: W,
+}
+
+impl<'a, W: Write> SstableWriter<'a, W> {
+    fn new(path: &'a Path, writer: W) -> Self {
+        Self { path, writer }
+    }
+
+    fn write_header(&mut self, entry_count: u64) -> AcorusResult<()> {
+        self.write_all(&format::MAGIC)?;
+        self.write_u8(format::VERSION)?;
+        self.write_u64(entry_count)?;
+        Ok(())
+    }
+
+    fn write_entry(&mut self, key: &str, value: &MemValue) -> AcorusResult<()> {
+        self.write_bytes(key.as_bytes(), "key")?;
+
+        match value {
+            MemValue::Value(value) => {
+                self.write_u8(format::ValueTag::Value.to_byte())?;
+                self.write_bytes(value.as_bytes(), "value")?;
+            }
+            MemValue::Tombstone => self.write_u8(format::ValueTag::Tombstone.to_byte())?,
+        }
+
+        Ok(())
+    }
+
+    fn flush(&mut self) -> AcorusResult<()> {
+        self.writer
+            .flush()
+            .map_err(|source| sstable_write_error(self.path, source))
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> AcorusResult<()> {
+        self.writer
+            .write_all(bytes)
+            .map_err(|source| sstable_write_error(self.path, source))
+    }
+
+    fn write_u8(&mut self, value: u8) -> AcorusResult<()> {
+        self.write_all(&[value])
+    }
+
+    fn write_u32(&mut self, value: u32) -> AcorusResult<()> {
+        self.write_all(&value.to_be_bytes())
+    }
+
+    fn write_u64(&mut self, value: u64) -> AcorusResult<()> {
+        self.write_all(&value.to_be_bytes())
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8], field_name: &'static str) -> AcorusResult<()> {
+        let len = u32::try_from(bytes.len()).map_err(|_| AcorusError::SSTableEncode {
+            path: self.path.to_path_buf(),
+            message: format!("{field_name} is too large to encode into SSTable V1"),
+        })?;
+        self.write_u32(len)?;
+        self.write_all(bytes)
+    }
+}
+
+struct SstableReader<'a, R> {
+    path: &'a Path,
+    reader: R,
+}
+
+impl<'a, R: Read> SstableReader<'a, R> {
+    fn new(path: &'a Path, reader: R) -> Self {
+        Self { path, reader }
+    }
+
+    fn read_header(&mut self) -> AcorusResult<u64> {
+        let magic = self.read_exact_array::<4>("header.magic")?;
+        if magic != format::MAGIC {
+            return Err(corrupted_sstable(
+                self.path,
+                "header.magic",
+                format!(
+                    "invalid magic number: expected {:?}, got {:?}",
+                    format::MAGIC,
+                    magic
+                ),
+            ));
+        }
+
+        let version = self.read_u8("header.version")?;
+        if version != format::VERSION {
+            return Err(corrupted_sstable(
+                self.path,
+                "header.version",
+                format!("unsupported sstable version: {version}"),
+            ));
+        }
+
+        self.read_u64("header.entry_count")
+    }
+
+    fn read_entry(&mut self, entry_index: u64) -> AcorusResult<(String, MemValue)> {
+        let key_len = self.read_u32(&entry_location(entry_index, "key_length"))?;
+        let key_bytes =
+            self.read_exact_vec(&entry_location(entry_index, "key_bytes"), key_len as usize)?;
+        let key = String::from_utf8(key_bytes).map_err(|error| {
+            corrupted_sstable_entry(
+                self.path,
+                entry_index,
+                "key_bytes",
+                format!("invalid UTF-8 sequence in key: {error}"),
+            )
+        })?;
+
+        let value_tag = self
+            .read_u8(&entry_location(entry_index, "value_tag"))
+            .and_then(|byte| {
+                format::ValueTag::from_byte(byte).ok_or_else(|| {
+                    corrupted_sstable_entry(
+                        self.path,
+                        entry_index,
+                        "value_tag",
+                        format!("unknown value tag: {byte}"),
+                    )
+                })
+            })?;
+
+        let value = match value_tag {
+            format::ValueTag::Value => {
+                let value_len = self.read_u32(&entry_location(entry_index, "value_length"))?;
+                let value_bytes = self.read_exact_vec(
+                    &entry_location(entry_index, "value_bytes"),
+                    value_len as usize,
+                )?;
+                let value = String::from_utf8(value_bytes).map_err(|error| {
+                    corrupted_sstable_entry(
+                        self.path,
+                        entry_index,
+                        "value_bytes",
+                        format!("invalid UTF-8 sequence in value: {error}"),
+                    )
+                })?;
+                MemValue::Value(value)
+            }
+            format::ValueTag::Tombstone => MemValue::Tombstone,
+        };
+
+        Ok((key, value))
+    }
+
+    fn ensure_eof(&mut self) -> AcorusResult<()> {
+        let mut trailing = [0u8; 1];
+        match self.reader.read(&mut trailing) {
+            Ok(0) => Ok(()),
+            Ok(_) => Err(corrupted_sstable(
+                self.path,
+                "trailer",
+                "unexpected trailing bytes after final entry",
+            )),
+            Err(source) => Err(sstable_read_error(self.path, source)),
+        }
+    }
+
+    fn read_u8(&mut self, context: &str) -> AcorusResult<u8> {
+        Ok(self.read_exact_array::<1>(context)?[0])
+    }
+
+    fn read_u32(&mut self, context: &str) -> AcorusResult<u32> {
+        Ok(u32::from_be_bytes(self.read_exact_array::<4>(context)?))
+    }
+
+    fn read_u64(&mut self, context: &str) -> AcorusResult<u64> {
+        Ok(u64::from_be_bytes(self.read_exact_array::<8>(context)?))
+    }
+
+    fn read_exact_array<const N: usize>(&mut self, context: &str) -> AcorusResult<[u8; N]> {
+        let mut buf = [0u8; N];
+        self.reader
+            .read_exact(&mut buf)
+            .map_err(|source| map_sstable_read_step_error(self.path, context, source))?;
+        Ok(buf)
+    }
+
+    fn read_exact_vec(&mut self, context: &str, len: usize) -> AcorusResult<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        self.reader
+            .read_exact(&mut buf)
+            .map_err(|source| map_sstable_read_step_error(self.path, context, source))?;
+        Ok(buf)
+    }
+}
+
 impl SSTable {
+    const TMP_EXTENSION: &str = "sst.tmp";
+
     pub fn open(path: &Path) -> AcorusResult<Self> {
         ensure_parent_dir(path)?;
 
@@ -44,61 +265,47 @@ impl SSTable {
     }
 
     pub fn write_from_mem_table(&self, mem_table: &BTreeMap<String, MemValue>) -> AcorusResult<()> {
-        let entries = mem_table
-            .iter()
-            .map(|(key, value)| TableEntry {
-                key: key.clone(),
-                value: value.clone(),
-            })
-            .collect::<Vec<_>>();
-
         let sst_path = self.path.clone();
 
         // 1. generate temp file path
-        let tmp_path = sst_path.with_extension(SSTABLE_FILE_TMP_EXTENSION);
+        let tmp_path = sst_path.with_extension(Self::TMP_EXTENSION);
 
-        // 2. serialize the memtable
-        let bytes = rmp_serde::to_vec(&entries).map_err(|error| AcorusError::SSTableEncode {
-            path: sst_path.clone(),
-            message: error.to_string(),
-        })?;
-
-        // 3. write to temp file
-        fs::write(&tmp_path, &bytes).map_err(|source| AcorusError::SSTableWrite {
-            path: tmp_path.clone(),
-            source,
-        })?;
-
-        // 4. sync temp file to disk
-        let file = File::open(&tmp_path).map_err(|source| AcorusError::SSTableWrite {
-            path: tmp_path.clone(),
-            source,
-        })?;
-        file.sync_all()
-            .map_err(|source| AcorusError::SSTableWrite {
+        let entry_count =
+            u64::try_from(mem_table.len()).map_err(|_| AcorusError::SSTableEncode {
                 path: tmp_path.clone(),
-                source,
+                message: "too many entries to encode into a single sstable".to_string(),
             })?;
 
+        let tmp_file =
+            File::create(&tmp_path).map_err(|source| sstable_write_error(&tmp_path, source))?;
+        let mut writer = SstableWriter::new(&tmp_path, BufWriter::new(tmp_file));
+
+        writer.write_header(entry_count)?;
+
+        for (key, value) in mem_table {
+            writer.write_entry(key, value)?;
+        }
+
+        writer.flush()?;
+        drop(writer);
+
+        // 4. sync temp file to disk
+        let file =
+            File::open(&tmp_path).map_err(|source| sstable_write_error(&tmp_path, source))?;
+        file.sync_all()
+            .map_err(|source| sstable_write_error(&tmp_path, source))?;
+
         // 5. atomically rename temp file to the target sstable file
-        std::fs::rename(&tmp_path, &sst_path).map_err(|source| AcorusError::SSTableWrite {
-            path: sst_path.clone(),
-            source,
-        })?;
+        std::fs::rename(&tmp_path, &sst_path)
+            .map_err(|source| sstable_write_error(&sst_path, source))?;
 
         // 6. sync directory to ensure the rename is persisted
         let dir = parent_dir_for_sync(&sst_path);
         let dir_path = dir.to_path_buf();
-        let dir_file = File::open(dir).map_err(|source| AcorusError::SSTableWrite {
-            path: dir_path.clone(),
-            source,
-        })?;
+        let dir_file = File::open(dir).map_err(|source| sstable_write_error(&dir_path, source))?;
         dir_file
             .sync_all()
-            .map_err(|source| AcorusError::SSTableWrite {
-                path: dir_path,
-                source,
-            })?;
+            .map_err(|source| sstable_write_error(&dir_path, source))?;
 
         Ok(())
     }
@@ -107,7 +314,7 @@ impl SSTable {
         let sst_path = self.path.clone();
 
         // 1. clean up any stale temp file from an interrupted previous write
-        let tmp_path = sst_path.with_extension(SSTABLE_FILE_TMP_EXTENSION);
+        let tmp_path = sst_path.with_extension(Self::TMP_EXTENSION);
         if tmp_path.exists() {
             fs::remove_file(&tmp_path).map_err(|source| AcorusError::SSTableRead {
                 path: tmp_path.clone(),
@@ -121,30 +328,105 @@ impl SSTable {
         }
 
         // 3. read the sstable file, deserialize it, and rebuild the memtable
-        let bytes = fs::read(&sst_path).map_err(|source| AcorusError::SSTableRead {
-            path: sst_path.clone(),
-            source,
-        })?;
-        let entries: Vec<TableEntry> =
-            rmp_serde::from_slice(&bytes).map_err(|error| AcorusError::SSTableDecode {
-                path: sst_path,
-                message: error.to_string(),
-            })?;
+        let reader =
+            File::open(&sst_path).map_err(|source| sstable_read_error(&sst_path, source))?;
+        let mut reader = SstableReader::new(&sst_path, BufReader::new(reader));
 
-        let mem_table = entries
-            .into_iter()
-            .map(|entry| (entry.key, entry.value))
-            .collect::<BTreeMap<_, _>>();
+        let entry_count = reader.read_header()?;
+
+        let mut mem_table = BTreeMap::new();
+        let mut last_key: Option<String> = None;
+        for entry_index in 0..entry_count {
+            let (key, value) = reader.read_entry(entry_index)?;
+
+            if let Some(previous_key) = &last_key
+                && key <= *previous_key
+            {
+                return Err(corrupted_sstable_entry(
+                    &sst_path,
+                    entry_index,
+                    "key",
+                    format!(
+                        "expected strictly increasing keys, got {key:?} after {previous_key:?}"
+                    ),
+                ));
+            }
+
+            last_key = Some(key.clone());
+            mem_table.insert(key, value);
+        }
+
+        reader.ensure_eof()?;
 
         Ok(mem_table)
     }
+}
+
+fn sstable_write_error(path: &Path, source: io::Error) -> AcorusError {
+    AcorusError::SSTableWrite {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn sstable_read_error(path: &Path, source: io::Error) -> AcorusError {
+    AcorusError::SSTableRead {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn corrupted_sstable(
+    path: &Path,
+    location: impl Into<String>,
+    message: impl Into<String>,
+) -> AcorusError {
+    AcorusError::CorruptedSSTable {
+        path: path.to_path_buf(),
+        location: location.into(),
+        message: message.into(),
+    }
+}
+
+fn corrupted_sstable_entry(
+    path: &Path,
+    entry_index: u64,
+    field: &'static str,
+    message: impl Into<String>,
+) -> AcorusError {
+    corrupted_sstable(path, entry_location(entry_index, field), message)
+}
+
+fn entry_location(entry_index: u64, field: &'static str) -> String {
+    format!("entry {entry_index}.{field}")
+}
+
+fn map_sstable_read_step_error(path: &Path, context: &str, source: io::Error) -> AcorusError {
+    if source.kind() == io::ErrorKind::UnexpectedEof {
+        return corrupted_sstable(
+            path,
+            context,
+            format!("truncated sstable while reading {context}"),
+        );
+    }
+
+    sstable_read_error(path, source)
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
         collections::BTreeMap,
-        fs,
+        fs::{
+            self,
+            File,
+            OpenOptions,
+        },
+        io::{
+            BufReader,
+            BufWriter,
+            Write,
+        },
         path::PathBuf,
         sync::atomic::{
             AtomicU64,
@@ -158,10 +440,18 @@ mod tests {
 
     use super::{
         SSTable,
-        TableEntry,
+        SstableReader,
+        SstableWriter,
+        format::{
+            self,
+            ValueTag,
+        },
     };
     use crate::{
-        error::AcorusResult,
+        error::{
+            AcorusError,
+            AcorusResult,
+        },
         storage_engine::MemValue,
     };
 
@@ -220,18 +510,160 @@ mod tests {
 
         sstable.write_from_mem_table(&mem_table)?;
 
-        let bytes = fs::read(paths.sstable_path.as_path())?;
-        let entries: Vec<TableEntry> =
-            rmp_serde::from_slice(&bytes).expect("sstable bytes should decode");
+        let file = File::open(paths.sstable_path.as_path())?;
+        let mut reader = SstableReader::new(paths.sstable_path.as_path(), BufReader::new(file));
+        let entry_count = reader.read_header()?;
+        let mut keys = Vec::new();
+        for entry_index in 0..entry_count {
+            let (key, _) = reader.read_entry(entry_index)?;
+            keys.push(key);
+        }
+        reader.ensure_eof()?;
 
         assert_eq!(
-            entries
-                .iter()
-                .map(|entry| entry.key.as_str())
-                .collect::<Vec<_>>(),
-            vec!["a", "b", "c"]
+            keys,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_magic() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        fs::write(paths.sstable_path.as_path(), b"BADC\x01\0\0\0\0\0\0\0\0")?;
+
+        let err = SSTable::open(paths.sstable_path.as_path())?
+            .load_to_mem_table()
+            .expect_err("invalid magic should fail");
+        assert!(matches!(
+            err,
+            AcorusError::CorruptedSSTable { ref location, .. } if location == "header.magic"
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unsupported_version() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&format::MAGIC);
+        bytes.push(format::VERSION + 1);
+        bytes.extend_from_slice(&0u64.to_be_bytes());
+        fs::write(paths.sstable_path.as_path(), bytes)?;
+
+        let err = SSTable::open(paths.sstable_path.as_path())?
+            .load_to_mem_table()
+            .expect_err("unsupported version should fail");
+        assert!(matches!(
+            err,
+            AcorusError::CorruptedSSTable { ref location, .. } if location == "header.version"
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_out_of_order_keys() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        let file = File::create(paths.sstable_path.as_path())?;
+        let mut writer = SstableWriter::new(paths.sstable_path.as_path(), BufWriter::new(file));
+
+        writer.write_header(2)?;
+        writer.write_entry("c", &MemValue::Value("3".to_string()))?;
+        writer.write_entry("a", &MemValue::Value("1".to_string()))?;
+        writer.flush()?;
+
+        let err = SSTable::open(paths.sstable_path.as_path())?
+            .load_to_mem_table()
+            .expect_err("out of order keys should fail");
+        assert!(matches!(
+            err,
+            AcorusError::CorruptedSSTable { ref location, .. } if location == "entry 1.key"
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_trailing_bytes_after_entries() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        let sstable = SSTable::open(paths.sstable_path.as_path())?;
+        let mem_table =
+            BTreeMap::from([("name".to_string(), MemValue::Value("acorus".to_string()))]);
+
+        sstable.write_from_mem_table(&mem_table)?;
+
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(paths.sstable_path.as_path())?;
+        file.write_all(b"\xff")?;
+        file.flush()?;
+
+        let err = SSTable::open(paths.sstable_path.as_path())?
+            .load_to_mem_table()
+            .expect_err("trailing bytes should fail");
+        assert!(matches!(
+            err,
+            AcorusError::CorruptedSSTable { ref location, .. } if location == "trailer"
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unknown_value_tag() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        let file = File::create(paths.sstable_path.as_path())?;
+        let mut writer = SstableWriter::new(paths.sstable_path.as_path(), BufWriter::new(file));
+
+        writer.write_header(1)?;
+        writer.write_bytes(b"name", "key")?;
+        writer.write_u8(7)?;
+        writer.flush()?;
+
+        let err = SSTable::open(paths.sstable_path.as_path())?
+            .load_to_mem_table()
+            .expect_err("unknown value tag should fail");
+        assert!(matches!(
+            err,
+            AcorusError::CorruptedSSTable { ref location, .. } if location == "entry 0.value_tag"
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_truncated_value_bytes() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        let file = File::create(paths.sstable_path.as_path())?;
+        let mut writer = SstableWriter::new(paths.sstable_path.as_path(), BufWriter::new(file));
+
+        writer.write_header(1)?;
+        write_entry_prefix_with_tag(&mut writer, "name", ValueTag::Value)?;
+        writer.write_u32(5)?;
+        writer.write_all(b"ac")?;
+        writer.flush()?;
+
+        let err = SSTable::open(paths.sstable_path.as_path())?
+            .load_to_mem_table()
+            .expect_err("truncated value bytes should fail");
+        assert!(matches!(
+            err,
+            AcorusError::CorruptedSSTable { ref location, .. } if location == "entry 0.value_bytes"
+        ));
+
+        Ok(())
+    }
+
+    fn write_entry_prefix_with_tag<W: Write>(
+        writer: &mut SstableWriter<'_, W>,
+        key: &str,
+        tag: ValueTag,
+    ) -> AcorusResult<()> {
+        writer.write_bytes(key.as_bytes(), "key")?;
+        writer.write_u8(tag.to_byte())?;
         Ok(())
     }
 

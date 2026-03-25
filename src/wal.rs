@@ -25,15 +25,156 @@ use crate::{
     },
 };
 
-mod wal_prefix {
-    pub const SET: &str = "SET";
-    pub const DEL: &str = "DEL";
-}
-
 pub struct Wal {
     path: PathBuf,
     file: File,
     size_bytes: usize,
+}
+
+struct WalReader<'a, R> {
+    path: &'a Path,
+    reader: R,
+    file_len: usize,
+    line_num: usize,
+    last_pos: usize,
+}
+
+impl<'a, R: BufRead> WalReader<'a, R> {
+    fn new(path: &'a Path, reader: R, file_len: usize) -> Self {
+        Self {
+            path,
+            reader,
+            file_len,
+            line_num: 0,
+            last_pos: 0,
+        }
+    }
+
+    fn read_entries(&mut self) -> AcorusResult<Vec<WalEntry>> {
+        let mut entries = Vec::new();
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+            let bytes_read = self
+                .reader
+                .read_line(&mut line)
+                .map_err(|source| wal_read_error(self.path, source))?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            self.line_num += 1;
+            self.last_pos += bytes_read;
+
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            match WalEntry::from_line(trim_line_ending(&line)) {
+                Ok(entry) => entries.push(entry),
+                Err(_) if self.is_last_line() => {
+                    tracing::error!(
+                        line_num = self.line_num,
+                        "ignoring malformed last line in WAL file, likely due to crash during writing"
+                    );
+                    break;
+                }
+                Err(error) => {
+                    return Err(corrupted_wal(
+                        self.path,
+                        format!("line {}.{}", self.line_num, error.field),
+                        error.message,
+                    ));
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    fn is_last_line(&self) -> bool {
+        self.last_pos >= self.file_len
+    }
+}
+
+struct WalWriter<'a, 'b> {
+    path: &'a Path,
+    file: &'b mut File,
+}
+
+impl<'a, 'b> WalWriter<'a, 'b> {
+    fn new(path: &'a Path, file: &'b mut File) -> Self {
+        Self { path, file }
+    }
+
+    fn append_entry(&mut self, entry: &WalEntry) -> AcorusResult<usize> {
+        let line = entry.to_line();
+        self.write_all(line.as_bytes())?;
+        self.write_all(b"\n")?;
+        self.flush()?;
+        self.sync_all()?;
+        Ok(line.len() + 1)
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> AcorusResult<()> {
+        self.file
+            .write_all(bytes)
+            .map_err(|source| wal_write_error(self.path, source))
+    }
+
+    fn flush(&mut self) -> AcorusResult<()> {
+        self.file
+            .flush()
+            .map_err(|source| wal_write_error(self.path, source))
+    }
+
+    fn sync_all(&mut self) -> AcorusResult<()> {
+        self.file
+            .sync_all()
+            .map_err(|source| wal_write_error(self.path, source))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WalOpcode {
+    Set,
+    Delete,
+}
+
+impl WalOpcode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Set => "SET",
+            Self::Delete => "DEL",
+        }
+    }
+
+    fn parse(raw: &str) -> Result<Self, WalDecodeError> {
+        match raw {
+            "SET" => Ok(Self::Set),
+            "DEL" => Ok(Self::Delete),
+            other => Err(WalDecodeError::new(
+                "command",
+                format!("unknown command {other:?}"),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WalDecodeError {
+    field: &'static str,
+    message: String,
+}
+
+impl WalDecodeError {
+    fn new(field: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            field,
+            message: message.into(),
+        }
+    }
 }
 
 impl Wal {
@@ -75,51 +216,8 @@ impl Wal {
                 source,
             })?
             .len() as usize;
-        let reader = BufReader::new(read_file);
-        let mut entries = Vec::new();
-
-        let mut line_num = 0;
-        let mut last_pos = 0;
-
-        for line in reader.lines() {
-            line_num += 1;
-            let line = line.map_err(|source| AcorusError::WalRead {
-                path: self.path.clone(),
-                source,
-            })?;
-            let current_pos = last_pos + line.len() + 1;
-            last_pos = current_pos;
-
-            if line.trim().is_empty() {
-                // skip empty lines
-                continue;
-            }
-
-            if let Some(entry) = WalEntry::from_line(&line) {
-                entries.push(entry);
-            } else {
-                let is_last_line = current_pos >= file_len;
-
-                if is_last_line {
-                    // if the line is last line and is malformed, we can ignore it since it may be a
-                    // result of a crash during writing. maybe it is because the
-                    // process crashed before the line was fully written
-                    tracing::error!(
-                        line_num,
-                        "ignoring malformed last line in WAL file, likely due to crash during writing"
-                    );
-                    break;
-                } else {
-                    // if the line is not last line and is malformed, we should return an error
-                    // since it indicates data corruption.
-                    return Err(AcorusError::CorruptedWal {
-                        path: self.path.clone(),
-                        line: line_num,
-                        message: format!("{line:?} is malformed and not the last line"),
-                    });
-                }
-            }
-        }
+        let mut reader = WalReader::new(&self.path, BufReader::new(read_file), file_len);
+        let entries = reader.read_entries()?;
 
         self.size_bytes = file_len;
 
@@ -127,35 +225,10 @@ impl Wal {
     }
 
     pub fn append(&mut self, entry: &WalEntry) -> AcorusResult<()> {
-        let line = entry.to_line();
-        self.file
-            .write_all(line.as_bytes())
-            .map_err(|source| AcorusError::WalWrite {
-                path: self.path.clone(),
-                source,
-            })?;
-        self.file
-            .write_all(b"\n")
-            .map_err(|source| AcorusError::WalWrite {
-                path: self.path.clone(),
-                source,
-            })?;
-        // flush the file buffer to ensure the data is written to the OS
-        self.file.flush().map_err(|source| AcorusError::WalWrite {
-            path: self.path.clone(),
-            source,
-        })?;
-        // and then call sync_all to ensure the data is flushed to disk.
-        // This way we can guarantee that once append returns successfully,
-        // the entry is safely stored in the WAL file, even in case of a crash.
-        self.file
-            .sync_all()
-            .map_err(|source| AcorusError::WalWrite {
-                path: self.path.clone(),
-                source,
-            })?;
+        let mut writer = WalWriter::new(&self.path, &mut self.file);
+        let bytes_written = writer.append_entry(entry)?;
 
-        self.size_bytes += line.len() + 1;
+        self.size_bytes += bytes_written;
 
         Ok(())
     }
@@ -226,37 +299,65 @@ impl WalEntry {
             WalEntry::Set { key, value } => {
                 format!(
                     "{}\t{}\t{}",
-                    wal_prefix::SET,
+                    WalOpcode::Set.as_str(),
                     encode_field(key),
                     encode_field(value)
                 )
             }
-            WalEntry::Delete { key } => format!("{}\t{}", wal_prefix::DEL, encode_field(key)),
+            WalEntry::Delete { key } => {
+                format!("{}\t{}", WalOpcode::Delete.as_str(), encode_field(key))
+            }
         }
     }
 
-    /// Parses a line from the WAL file into a WalEntry. Returns None if the line is malformed.
-    pub fn from_line(line: &str) -> Option<Self> {
-        let mut parts = line.trim_end().split('\t');
-        match parts.next()? {
-            wal_prefix::SET => {
-                let key = decode_field(parts.next()?)?;
-                let value = decode_field(parts.next()?)?;
+    /// Parses a line from the WAL file into a WalEntry.
+    fn from_line(line: &str) -> Result<Self, WalDecodeError> {
+        let mut parts = line.split('\t');
+        let opcode = WalOpcode::parse(
+            parts
+                .next()
+                .ok_or_else(|| WalDecodeError::new("command", "missing command"))?,
+        )?;
+
+        match opcode {
+            WalOpcode::Set => {
+                let key = decode_field(
+                    parts
+                        .next()
+                        .ok_or_else(|| WalDecodeError::new("key", "missing key field"))?,
+                )
+                .map_err(|message| WalDecodeError::new("key", message))?;
+                let value = decode_field(
+                    parts
+                        .next()
+                        .ok_or_else(|| WalDecodeError::new("value", "missing value field"))?,
+                )
+                .map_err(|message| WalDecodeError::new("value", message))?;
                 if parts.next().is_some() {
-                    return None;
+                    return Err(WalDecodeError::new(
+                        "trailing_fields",
+                        "unexpected trailing fields",
+                    ));
                 }
 
-                Some(WalEntry::Set { key, value })
+                Ok(WalEntry::Set { key, value })
             }
-            wal_prefix::DEL => {
-                let key = decode_field(parts.next()?)?;
+            WalOpcode::Delete => {
+                let key = decode_field(
+                    parts
+                        .next()
+                        .ok_or_else(|| WalDecodeError::new("key", "missing key field"))?,
+                )
+                .map_err(|message| WalDecodeError::new("key", message))?;
                 if parts.next().is_some() {
-                    return None;
+                    return Err(WalDecodeError::new(
+                        "trailing_fields",
+                        "unexpected trailing fields",
+                    ));
                 }
 
-                Some(WalEntry::Delete { key })
+                Ok(WalEntry::Delete { key })
             }
-            _ => None,
         }
     }
 }
@@ -277,7 +378,7 @@ fn encode_field(field: &str) -> String {
     encoded
 }
 
-fn decode_field(field: &str) -> Option<String> {
+fn decode_field(field: &str) -> Result<String, String> {
     let mut decoded = String::with_capacity(field.len());
     let mut chars = field.chars();
 
@@ -287,22 +388,77 @@ fn decode_field(field: &str) -> Option<String> {
             continue;
         }
 
-        let escaped = chars.next()?;
+        let escaped = chars
+            .next()
+            .ok_or_else(|| "trailing escape sequence".to_string())?;
         match escaped {
             '\\' => decoded.push('\\'),
             't' => decoded.push('\t'),
             'n' => decoded.push('\n'),
             'r' => decoded.push('\r'),
-            _ => return None,
+            other => {
+                return Err(format!("unknown escape sequence: \\{other}"));
+            }
         }
     }
 
-    Some(decoded)
+    Ok(decoded)
+}
+
+fn trim_line_ending(line: &str) -> &str {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
+fn wal_read_error(path: &Path, source: std::io::Error) -> AcorusError {
+    AcorusError::WalRead {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn wal_write_error(path: &Path, source: std::io::Error) -> AcorusError {
+    AcorusError::WalWrite {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn corrupted_wal(
+    path: &Path,
+    location: impl Into<String>,
+    message: impl Into<String>,
+) -> AcorusError {
+    AcorusError::CorruptedWal {
+        path: path.to_path_buf(),
+        location: location.into(),
+        message: message.into(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::WalEntry;
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{
+            AtomicU64,
+            Ordering,
+        },
+        time::{
+            SystemTime,
+            UNIX_EPOCH,
+        },
+    };
+
+    use super::{
+        Wal,
+        WalEntry,
+    };
+    use crate::error::{
+        AcorusError,
+        AcorusResult,
+    };
 
     #[test]
     fn wal_round_trip_preserves_special_characters() {
@@ -311,12 +467,107 @@ mod tests {
             value: "line1\nline2\\tail".into(),
         };
 
-        assert_eq!(WalEntry::from_line(&entry.to_line()), Some(entry));
+        assert_eq!(WalEntry::from_line(&entry.to_line()), Ok(entry));
     }
 
     #[test]
     fn wal_line_does_not_embed_newline() {
         let entry = WalEntry::Delete { key: "name".into() };
         assert!(!entry.to_line().contains('\n'));
+    }
+
+    #[test]
+    fn wal_round_trip_preserves_empty_value() {
+        let entry = WalEntry::Set {
+            key: "name".into(),
+            value: "".into(),
+        };
+
+        assert_eq!(WalEntry::from_line(&entry.to_line()), Ok(entry));
+    }
+
+    #[test]
+    fn reports_field_location_for_corrupted_non_final_line() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        fs::write(&paths.wal_path, "SET\tkey\tbad\\x\nDEL\tname\n")?;
+
+        let err = Wal::open(paths.wal_path.as_path())?
+            .read_entries()
+            .expect_err("expected corrupted wal to fail");
+
+        assert!(matches!(
+            err,
+            AcorusError::CorruptedWal { ref location, .. } if location == "line 1.value"
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn reports_command_location_for_unknown_opcode() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        fs::write(&paths.wal_path, "BAD\tkey\tvalue\nDEL\tname\n")?;
+
+        let err = Wal::open(paths.wal_path.as_path())?
+            .read_entries()
+            .expect_err("unknown opcode should fail");
+
+        assert!(matches!(
+            err,
+            AcorusError::CorruptedWal { ref location, .. } if location == "line 1.command"
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn reports_trailing_fields_location() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        fs::write(&paths.wal_path, "DEL\tname\textra\nSET\tkey\tvalue\n")?;
+
+        let err = Wal::open(paths.wal_path.as_path())?
+            .read_entries()
+            .expect_err("trailing fields should fail");
+
+        assert!(matches!(
+            err,
+            AcorusError::CorruptedWal { ref location, .. } if location == "line 1.trailing_fields"
+        ));
+
+        Ok(())
+    }
+
+    struct TestPaths {
+        root_dir: PathBuf,
+        wal_path: PathBuf,
+    }
+
+    impl TestPaths {
+        fn new() -> AcorusResult<Self> {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let root_dir = std::env::temp_dir().join(format!(
+                "acorusdb-wal-tests-{}-{timestamp}-{sequence}",
+                std::process::id()
+            ));
+
+            fs::create_dir_all(&root_dir)?;
+
+            Ok(Self {
+                wal_path: root_dir.join("data.wal"),
+                root_dir,
+            })
+        }
+    }
+
+    impl Drop for TestPaths {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root_dir);
+        }
     }
 }

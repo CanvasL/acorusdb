@@ -16,16 +16,18 @@
 ## 第二阶段：把当前单文件落盘结构演进成 SSTable V1
 
 - [x] 把主路径代码、配置和文档里的 `snapshot` 命名逐步退场，统一成 `sstable`。
-- [ ] 把 [`src/sstable.rs`](/Users/fan/MyProjects/acorusdb/src/sstable.rs) 从“整张表序列化”继续演进成“更像 SSTable 的有序、不可变表文件”。
-- [ ] 先定义一个足够简单的 SSTable 文件格式：
-  - [ ] 文件头
-  - [ ] 按 key 排序的记录
-  - [ ] delete 对应的 tombstone 标记
-- [ ] 第一版先保证顺序可读和正确性，不着急做索引。
-- [ ] 补测试覆盖：
+- [x] 把 [`src/sstable.rs`](/Users/fan/MyProjects/acorusdb/src/sstable.rs) 从“整张表序列化”继续演进成“更像 SSTable 的有序、不可变表文件”。
+- [x] 先定义一个足够简单的 SSTable 文件格式：
+  - [x] 文件头
+  - [x] 按 key 排序的记录
+  - [x] delete 对应的 tombstone 标记
+- [x] 第一版先保证顺序可读和正确性，不着急做索引。
+- [x] 补测试覆盖：
   - [x] 写出有序表
   - [x] 读取有序表
   - [x] 正确识别 tombstone
+  - [x] 损坏 header / value tag / trailer 的报错定位
+  - [x] WAL 损坏字段定位和 trailing fields 场景
 
 ## 第三阶段：引入 memtable flush
 
@@ -84,4 +86,4 @@
 
 ## 建议的下一步
 
-- [ ] 继续推进第二阶段，把当前单文件 SSTable 逐步演进成 SSTable V1。
+- [ ] 开始第三阶段，引入 memtable flush，把“全量 compact”逐步收敛成真正的 flush 路径。

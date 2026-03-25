@@ -207,6 +207,46 @@ load sstable
 - WAL 最后一行损坏会被视作可能的 torn write 并忽略
 - WAL 中间行损坏会作为错误上报
 
+## 磁盘格式
+
+当前项目已经不再使用“整张表直接序列化”的落盘方式，而是定义了一个简单的 SSTable V1 格式。
+
+### WAL
+
+- WAL 是文本行格式。
+- 每行一条记录，当前只有两种 opcode：
+  - `SET\t<escaped-key>\t<escaped-value>`
+  - `DEL\t<escaped-key>`
+- 字段分隔符是 `\t`。
+- 字段内部会转义这些字符：
+  - `\\`
+  - `\t`
+  - `\n`
+  - `\r`
+- 空 value 是合法的，可以完整 round-trip。
+- 只有“最后一条损坏记录”会被当作可能的 torn write 忽略；中间记录损坏会直接报错。
+
+### SSTable V1
+
+- 当前所有整数都按 big-endian 写入。
+- 文件头结构：
+  - magic: `ACSS`
+  - version: `u8`
+  - entry_count: `u64`
+- 每条 entry 结构：
+  - key_length: `u32`
+  - key_bytes: UTF-8
+  - value_tag: `u8`
+  - 如果是普通值，再写：
+    - value_length: `u32`
+    - value_bytes: UTF-8
+- `value_tag` 当前定义：
+  - `0` 表示普通值
+  - `1` 表示 tombstone
+- entry 按 key 严格递增写出。
+- 文件尾不允许出现额外字节。
+- 当前版本还没有 index、block、checksum 和 bloom filter。
+
 ## Tombstone 设计
 
 当前项目已经把 delete 语义显式建模成 tombstone，并为后续 mini-LSM 演进做准备。
@@ -237,6 +277,11 @@ load sstable
 
 协议错误单独保留在 `protocol` 层，不和内部运行时错误混在一起。
 
+其中：
+
+- `CorruptedWal` 会带上类似 `line 1.value`、`line 2.command` 这种定位。
+- `CorruptedSSTable` 会带上类似 `header.magic`、`entry 0.value_tag`、`trailer` 这种定位。
+
 ## 优雅停机
 
 收到 `Ctrl+C` 或 `SIGTERM` 后：
@@ -265,9 +310,9 @@ cargo test
 - compact 后恢复
 - compact 后 tombstone 保留
 - `sstable + wal` 叠加恢复
-- SSTable 直接读写、排序和 tombstone 保留
+- SSTable 直接读写、排序、tombstone 保留和损坏定位
 - 重启后和 compact 后的 key 顺序稳定性
-- WAL 损坏边界
+- WAL 损坏边界和字段定位
 - TCP 会话端到端读写
 - shutdown 时客户端收到 `BYE`
 
@@ -275,7 +320,7 @@ cargo test
 
 - 还不是 RESP 协议
 - 还不是 Redis 客户端兼容实现
-- 当前 SSTable 还只是单文件全量落盘版本
+- 当前 SSTable 还是单文件、无索引、全量写出版本
 - 当前存储结构还不是 LSM Tree
 - 还没有 manifest、Bloom filter、后台 compaction 等能力
 
@@ -285,5 +330,6 @@ cargo test
 
 核心方向是把当前存储引擎逐步演进成一个 mini-LSM：
 
-- 继续把当前单文件 SSTable 演进成更像真正 SSTable 的磁盘格式
-- 然后支持 flush、多表读和 merge compaction
+- 先把当前“单文件全量 compact”过渡成真正的 memtable flush
+- 然后支持多 SSTable 和 manifest
+- 最后再进入 merge compaction
