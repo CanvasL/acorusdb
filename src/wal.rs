@@ -293,7 +293,7 @@ pub enum WalEntry {
 }
 
 impl WalEntry {
-    /// Converts a WalEntry into a line that can be written to the WAL file.
+    /// Encodes a WAL record into a single escaped line.
     pub fn to_line(&self) -> String {
         match self {
             WalEntry::Set { key, value } => {
@@ -310,7 +310,7 @@ impl WalEntry {
         }
     }
 
-    /// Parses a line from the WAL file into a WalEntry.
+    /// Decodes one WAL line back into a record.
     fn from_line(line: &str) -> Result<Self, WalDecodeError> {
         let mut parts = line.split('\t');
         let opcode = WalOpcode::parse(

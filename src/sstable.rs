@@ -267,7 +267,7 @@ impl SSTable {
     pub fn write_from_mem_table(&self, mem_table: &BTreeMap<String, MemValue>) -> AcorusResult<()> {
         let sst_path = self.path.clone();
 
-        // 1. generate temp file path
+        // Write into a temp file first so the final rename is atomic.
         let tmp_path = sst_path.with_extension(Self::TMP_EXTENSION);
 
         let entry_count =
@@ -289,17 +289,17 @@ impl SSTable {
         writer.flush()?;
         drop(writer);
 
-        // 4. sync temp file to disk
+        // Make the temp file contents durable before publishing it.
         let file =
             File::open(&tmp_path).map_err(|source| sstable_write_error(&tmp_path, source))?;
         file.sync_all()
             .map_err(|source| sstable_write_error(&tmp_path, source))?;
 
-        // 5. atomically rename temp file to the target sstable file
+        // Publish the new table atomically.
         std::fs::rename(&tmp_path, &sst_path)
             .map_err(|source| sstable_write_error(&sst_path, source))?;
 
-        // 6. sync directory to ensure the rename is persisted
+        // Sync the parent directory so the rename itself is durable.
         let dir = parent_dir_for_sync(&sst_path);
         let dir_path = dir.to_path_buf();
         let dir_file = File::open(dir).map_err(|source| sstable_write_error(&dir_path, source))?;
@@ -313,7 +313,7 @@ impl SSTable {
     pub fn load_to_mem_table(&self) -> AcorusResult<BTreeMap<String, MemValue>> {
         let sst_path = self.path.clone();
 
-        // 1. clean up any stale temp file from an interrupted previous write
+        // Ignore stale temp output from an interrupted previous write.
         let tmp_path = sst_path.with_extension(Self::TMP_EXTENSION);
         if tmp_path.exists() {
             fs::remove_file(&tmp_path).map_err(|source| AcorusError::SSTableRead {
@@ -322,12 +322,12 @@ impl SSTable {
             })?;
         }
 
-        // 2. if the sstable does not exist yet, recovery starts from an empty memtable
+        // First startup has no SSTable yet.
         if !sst_path.exists() {
             return Ok(BTreeMap::new());
         }
 
-        // 3. read the sstable file, deserialize it, and rebuild the memtable
+        // Decode the SSTable file and rebuild the memtable in key order.
         let reader =
             File::open(&sst_path).map_err(|source| sstable_read_error(&sst_path, source))?;
         let mut reader = SstableReader::new(&sst_path, BufReader::new(reader));

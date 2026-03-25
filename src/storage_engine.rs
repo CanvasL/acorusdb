@@ -18,9 +18,10 @@ pub enum MemValue {
     Tombstone,
 }
 
-/// The `StorageEngine` owns the in-memory memtable together with the SSTable and WAL files.
-/// It is responsible for applying writes, serving reads, recovering state on startup, and
-/// compacting the current memtable into an SSTable.
+/// Coordinates the in-memory memtable with the on-disk SSTable and WAL.
+///
+/// Startup recovery loads the latest SSTable first and then replays the WAL on top of it.
+/// The live write path appends to the WAL before updating the memtable.
 pub struct StorageEngine {
     mem_table: BTreeMap<String, MemValue>,
     wal_compact_threshold_bytes: usize,
@@ -29,8 +30,7 @@ pub struct StorageEngine {
 }
 
 impl StorageEngine {
-    /// Opens the storage engine by loading the SSTable and replaying the WAL into the memtable.
-    /// This is the startup recovery path.
+    /// Opens the engine by rebuilding the memtable from `sstable + wal`.
     pub fn open(
         sstable_path: &Path,
         wal_path: &Path,
@@ -60,8 +60,7 @@ impl StorageEngine {
         })
     }
 
-    /// Sets a key-value pair by appending to the WAL first and then applying the value to the
-    /// memtable.
+    /// Appends a `SET` record to the WAL and then applies the visible value to the memtable.
     pub fn set(&mut self, key: &str, value: &str) -> AcorusResult<()> {
         let entry = WalEntry::Set {
             key: key.into(),
@@ -74,8 +73,9 @@ impl StorageEngine {
         Ok(())
     }
 
-    /// Gets the visible value of a key from the memtable. Returns `None` when the key is missing
-    /// or currently marked as a tombstone.
+    /// Returns the current visible value for a key.
+    ///
+    /// Keys that are absent or currently masked by a tombstone both read as `None`.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.mem_table.get(key).and_then(|value| match value {
             MemValue::Value(value) => Some(value.as_str()),
@@ -83,8 +83,9 @@ impl StorageEngine {
         })
     }
 
-    /// Marks a key as deleted in the memtable by writing a tombstone. Returns `true` only when the
-    /// key previously held a visible value.
+    /// Appends a `DEL` record and marks the key as a tombstone in the memtable.
+    ///
+    /// Returns `true` only when the key previously held a visible value.
     pub fn delete(&mut self, key: &str) -> AcorusResult<bool> {
         if matches!(self.mem_table.get(key), None | Some(&MemValue::Tombstone)) {
             return Ok(false);
@@ -98,15 +99,15 @@ impl StorageEngine {
         Ok(true)
     }
 
-    /// Persists the current memtable as an SSTable and clears the WAL.
+    /// Rewrites the current memtable into the single on-disk SSTable and then clears the WAL.
     fn compact(&mut self) -> AcorusResult<()> {
         self.sstable.write_from_mem_table(&self.mem_table)?;
         self.wal.reset()?;
         Ok(())
     }
 
-    /// Checks whether the WAL size exceeds the compact threshold and, if so, compacts the current
-    /// memtable.
+    /// Runs the current single-file compaction path when the WAL grows beyond the configured
+    /// threshold.
     fn maybe_compact(&mut self) {
         if self.wal.should_compact(self.wal_compact_threshold_bytes)
             && let Err(err) = self.compact()
@@ -115,8 +116,10 @@ impl StorageEngine {
         }
     }
 
-    /// Applies a WAL entry to the memtable. This is used both on the live write path and during
-    /// startup recovery.
+    /// Applies a decoded WAL record to the memtable.
+    ///
+    /// This is shared by both startup recovery and the live write path so the two paths keep the
+    /// same state transition rules.
     fn apply_wal(&mut self, entry: WalEntry) {
         match entry {
             WalEntry::Set { key, value } => {
