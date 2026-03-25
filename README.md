@@ -254,14 +254,14 @@ load sstable
 当前规则如下：
 
 1. tombstone 表示“这个 key 被逻辑删除”，而不是“系统里从未出现过这个 key”。
-2. 在 [`src/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage_engine.rs) 中，内存表 `mem_table` 使用 `MemValue::Tombstone` 表示删除状态。
+2. 在 [`src/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage_engine.rs) 中，内存表 `memtable` 使用 `MemValue::Tombstone` 表示删除状态。
 3. `GET` 遇到 tombstone 时返回不存在，也就是协议层的 `(nil)`。
 4. `EXISTS` 遇到 tombstone 时返回 `false`，也就是协议层的 `0`。
 5. 对已经是 tombstone 的 key 再执行一次 `DEL`，返回 `false`。
 6. `SET` 可以覆盖 tombstone，使同一个 key 重新生效。
 7. WAL 中的 `Delete` 在恢复时会重建成 tombstone，而不是直接把 key 从内存表里移除。
 8. 当前 SSTable 也会持久化 tombstone，保证 compact 和重启后删除语义不丢失。
-9. 当前 compact 不会主动清理 tombstone，它只是把当前 `mem_table` 状态落盘并清空 WAL。
+9. 当前 compact 不会主动清理 tombstone，它只是把当前 `memtable` 状态落盘并清空 WAL。
 10. 未来进入 SSTable / LSM 阶段后，tombstone 会继续承担“遮蔽旧层旧值”的职责，并在合适的 compaction 时机清理。
 
 ## 错误处理

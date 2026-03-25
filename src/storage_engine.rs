@@ -23,7 +23,7 @@ pub enum MemValue {
 /// Startup recovery loads the latest SSTable first and then replays the WAL on top of it.
 /// The live write path appends to the WAL before updating the memtable.
 pub struct StorageEngine {
-    mem_table: BTreeMap<String, MemValue>,
+    memtable: BTreeMap<String, MemValue>,
     wal_compact_threshold_bytes: usize,
     sstable: SSTable,
     wal: Wal,
@@ -39,21 +39,21 @@ impl StorageEngine {
         let sstable = SSTable::open(sstable_path)?;
         let mut wal = Wal::open(wal_path)?;
 
-        let mut mem_table = sstable.load_to_mem_table()?;
+        let mut memtable = sstable.load_to_memtable()?;
 
         for entry in wal.read_entries()? {
             match entry {
                 WalEntry::Set { key, value } => {
-                    mem_table.insert(key, MemValue::Value(value));
+                    memtable.insert(key, MemValue::Value(value));
                 }
                 WalEntry::Delete { key } => {
-                    mem_table.insert(key, MemValue::Tombstone);
+                    memtable.insert(key, MemValue::Tombstone);
                 }
             }
         }
 
         Ok(Self {
-            mem_table,
+            memtable,
             sstable,
             wal,
             wal_compact_threshold_bytes,
@@ -77,7 +77,7 @@ impl StorageEngine {
     ///
     /// Keys that are absent or currently masked by a tombstone both read as `None`.
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.mem_table.get(key).and_then(|value| match value {
+        self.memtable.get(key).and_then(|value| match value {
             MemValue::Value(value) => Some(value.as_str()),
             MemValue::Tombstone => None,
         })
@@ -87,7 +87,7 @@ impl StorageEngine {
     ///
     /// Returns `true` only when the key previously held a visible value.
     pub fn delete(&mut self, key: &str) -> AcorusResult<bool> {
-        if matches!(self.mem_table.get(key), None | Some(&MemValue::Tombstone)) {
+        if matches!(self.memtable.get(key), None | Some(&MemValue::Tombstone)) {
             return Ok(false);
         }
 
@@ -101,7 +101,7 @@ impl StorageEngine {
 
     /// Rewrites the current memtable into the single on-disk SSTable and then clears the WAL.
     fn compact(&mut self) -> AcorusResult<()> {
-        self.sstable.write_from_mem_table(&self.mem_table)?;
+        self.sstable.write_from_memtable(&self.memtable)?;
         self.wal.reset()?;
         Ok(())
     }
@@ -123,10 +123,10 @@ impl StorageEngine {
     fn apply_wal(&mut self, entry: WalEntry) {
         match entry {
             WalEntry::Set { key, value } => {
-                self.mem_table.insert(key, MemValue::Value(value));
+                self.memtable.insert(key, MemValue::Value(value));
             }
             WalEntry::Delete { key } => {
-                self.mem_table.insert(key, MemValue::Tombstone);
+                self.memtable.insert(key, MemValue::Tombstone);
             }
         }
     }
@@ -234,7 +234,7 @@ mod tests {
         let engine = open_engine(&paths, usize::MAX)?;
         assert_eq!(engine.get("name"), None);
         assert!(matches!(
-            engine.mem_table.get("name"),
+            engine.memtable.get("name"),
             Some(MemValue::Tombstone)
         ));
 
@@ -254,7 +254,7 @@ mod tests {
         let engine = open_engine(&paths, usize::MAX)?;
         assert_eq!(engine.get("name"), None);
         assert!(matches!(
-            engine.mem_table.get("name"),
+            engine.memtable.get("name"),
             Some(MemValue::Tombstone)
         ));
 
@@ -391,7 +391,7 @@ mod tests {
     }
 
     fn key_order(engine: &StorageEngine) -> Vec<&str> {
-        engine.mem_table.keys().map(|key| key.as_str()).collect()
+        engine.memtable.keys().map(|key| key.as_str()).collect()
     }
 
     struct TestPaths {

@@ -264,14 +264,14 @@ impl SSTable {
         })
     }
 
-    pub fn write_from_mem_table(&self, mem_table: &BTreeMap<String, MemValue>) -> AcorusResult<()> {
+    pub fn write_from_memtable(&self, memtable: &BTreeMap<String, MemValue>) -> AcorusResult<()> {
         let sst_path = self.path.clone();
 
         // Write into a temp file first so the final rename is atomic.
         let tmp_path = sst_path.with_extension(Self::TMP_EXTENSION);
 
         let entry_count =
-            u64::try_from(mem_table.len()).map_err(|_| AcorusError::SSTableEncode {
+            u64::try_from(memtable.len()).map_err(|_| AcorusError::SSTableEncode {
                 path: tmp_path.clone(),
                 message: "too many entries to encode into a single sstable".to_string(),
             })?;
@@ -282,7 +282,7 @@ impl SSTable {
 
         writer.write_header(entry_count)?;
 
-        for (key, value) in mem_table {
+        for (key, value) in memtable {
             writer.write_entry(key, value)?;
         }
 
@@ -310,7 +310,7 @@ impl SSTable {
         Ok(())
     }
 
-    pub fn load_to_mem_table(&self) -> AcorusResult<BTreeMap<String, MemValue>> {
+    pub fn load_to_memtable(&self) -> AcorusResult<BTreeMap<String, MemValue>> {
         let sst_path = self.path.clone();
 
         // Ignore stale temp output from an interrupted previous write.
@@ -334,7 +334,7 @@ impl SSTable {
 
         let entry_count = reader.read_header()?;
 
-        let mut mem_table = BTreeMap::new();
+        let mut memtable = BTreeMap::new();
         let mut last_key: Option<String> = None;
         for entry_index in 0..entry_count {
             let (key, value) = reader.read_entry(entry_index)?;
@@ -353,12 +353,12 @@ impl SSTable {
             }
 
             last_key = Some(key.clone());
-            mem_table.insert(key, value);
+            memtable.insert(key, value);
         }
 
         reader.ensure_eof()?;
 
-        Ok(mem_table)
+        Ok(memtable)
     }
 }
 
@@ -456,11 +456,11 @@ mod tests {
     };
 
     #[test]
-    fn missing_file_returns_empty_mem_table() -> AcorusResult<()> {
+    fn missing_file_returns_empty_memtable() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let sstable = SSTable::open(paths.sstable_path.as_path())?;
 
-        assert!(sstable.load_to_mem_table()?.is_empty());
+        assert!(sstable.load_to_memtable()?.is_empty());
 
         Ok(())
     }
@@ -469,15 +469,15 @@ mod tests {
     fn write_then_load_round_trip() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let sstable = SSTable::open(paths.sstable_path.as_path())?;
-        let mem_table = BTreeMap::from([
+        let memtable = BTreeMap::from([
             ("language".to_string(), MemValue::Value("rust".to_string())),
             ("name".to_string(), MemValue::Value("acorus".to_string())),
         ]);
 
-        sstable.write_from_mem_table(&mem_table)?;
+        sstable.write_from_memtable(&memtable)?;
 
-        let loaded = SSTable::open(paths.sstable_path.as_path())?.load_to_mem_table()?;
-        assert_eq!(loaded, mem_table);
+        let loaded = SSTable::open(paths.sstable_path.as_path())?.load_to_memtable()?;
+        assert_eq!(loaded, memtable);
 
         Ok(())
     }
@@ -486,15 +486,15 @@ mod tests {
     fn preserves_tombstone_during_round_trip() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let sstable = SSTable::open(paths.sstable_path.as_path())?;
-        let mem_table = BTreeMap::from([
+        let memtable = BTreeMap::from([
             ("deleted".to_string(), MemValue::Tombstone),
             ("live".to_string(), MemValue::Value("visible".to_string())),
         ]);
 
-        sstable.write_from_mem_table(&mem_table)?;
+        sstable.write_from_memtable(&memtable)?;
 
-        let loaded = SSTable::open(paths.sstable_path.as_path())?.load_to_mem_table()?;
-        assert_eq!(loaded, mem_table);
+        let loaded = SSTable::open(paths.sstable_path.as_path())?.load_to_memtable()?;
+        assert_eq!(loaded, memtable);
 
         Ok(())
     }
@@ -503,12 +503,12 @@ mod tests {
     fn writes_entries_in_sorted_key_order() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let sstable = SSTable::open(paths.sstable_path.as_path())?;
-        let mut mem_table = BTreeMap::new();
-        mem_table.insert("c".to_string(), MemValue::Value("3".to_string()));
-        mem_table.insert("a".to_string(), MemValue::Value("1".to_string()));
-        mem_table.insert("b".to_string(), MemValue::Value("2".to_string()));
+        let mut memtable = BTreeMap::new();
+        memtable.insert("c".to_string(), MemValue::Value("3".to_string()));
+        memtable.insert("a".to_string(), MemValue::Value("1".to_string()));
+        memtable.insert("b".to_string(), MemValue::Value("2".to_string()));
 
-        sstable.write_from_mem_table(&mem_table)?;
+        sstable.write_from_memtable(&memtable)?;
 
         let file = File::open(paths.sstable_path.as_path())?;
         let mut reader = SstableReader::new(paths.sstable_path.as_path(), BufReader::new(file));
@@ -534,7 +534,7 @@ mod tests {
         fs::write(paths.sstable_path.as_path(), b"BADC\x01\0\0\0\0\0\0\0\0")?;
 
         let err = SSTable::open(paths.sstable_path.as_path())?
-            .load_to_mem_table()
+            .load_to_memtable()
             .expect_err("invalid magic should fail");
         assert!(matches!(
             err,
@@ -554,7 +554,7 @@ mod tests {
         fs::write(paths.sstable_path.as_path(), bytes)?;
 
         let err = SSTable::open(paths.sstable_path.as_path())?
-            .load_to_mem_table()
+            .load_to_memtable()
             .expect_err("unsupported version should fail");
         assert!(matches!(
             err,
@@ -576,7 +576,7 @@ mod tests {
         writer.flush()?;
 
         let err = SSTable::open(paths.sstable_path.as_path())?
-            .load_to_mem_table()
+            .load_to_memtable()
             .expect_err("out of order keys should fail");
         assert!(matches!(
             err,
@@ -590,10 +590,10 @@ mod tests {
     fn rejects_trailing_bytes_after_entries() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let sstable = SSTable::open(paths.sstable_path.as_path())?;
-        let mem_table =
+        let memtable =
             BTreeMap::from([("name".to_string(), MemValue::Value("acorus".to_string()))]);
 
-        sstable.write_from_mem_table(&mem_table)?;
+        sstable.write_from_memtable(&memtable)?;
 
         let mut file = OpenOptions::new()
             .append(true)
@@ -602,7 +602,7 @@ mod tests {
         file.flush()?;
 
         let err = SSTable::open(paths.sstable_path.as_path())?
-            .load_to_mem_table()
+            .load_to_memtable()
             .expect_err("trailing bytes should fail");
         assert!(matches!(
             err,
@@ -624,7 +624,7 @@ mod tests {
         writer.flush()?;
 
         let err = SSTable::open(paths.sstable_path.as_path())?
-            .load_to_mem_table()
+            .load_to_memtable()
             .expect_err("unknown value tag should fail");
         assert!(matches!(
             err,
@@ -647,7 +647,7 @@ mod tests {
         writer.flush()?;
 
         let err = SSTable::open(paths.sstable_path.as_path())?
-            .load_to_mem_table()
+            .load_to_memtable()
             .expect_err("truncated value bytes should fail");
         assert!(matches!(
             err,
