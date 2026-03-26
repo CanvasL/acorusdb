@@ -11,8 +11,8 @@
 - 文本行协议
 - 内存 KV 存储
 - WAL 持久化
-- SSTable 恢复
-- 自动 compact
+- 多 SSTable 恢复
+- memtable flush
 - tracing 日志
 - 配置文件加载
 - 优雅停机
@@ -32,8 +32,8 @@
   - `QUIT`
 - 支持 `value` 中包含空格。
 - `key` 当前不允许包含空白字符。
-- 启动时会先加载 SSTable，再回放 WAL。
-- WAL 达到阈值后会触发 compact。
+- 启动时会扫描 `sstable.dir` 下属于 `sstable.prefix` 的所有表文件，再回放 WAL。
+- active memtable 达到阈值后会触发 flush。
 - 收到 `Ctrl+C` 或 `SIGTERM` 后会停止接收新连接，并通知现有连接退出。
 
 ## 项目结构
@@ -51,11 +51,11 @@
 - `src/database.rs`
   - 命令执行入口。
 - `src/storage_engine.rs`
-  - 内存状态、SSTable、WAL 和 compact 的协调层。
+  - active memtable、多 SSTable、WAL 和 flush 的协调层。
 - `src/wal.rs`
   - WAL 读写、恢复和 reset。
 - `src/sstable.rs`
-  - 当前单文件 SSTable 的保存和加载。
+  - 单张 SSTable 文件的保存、加载和点查。
 - `src/config.rs`
   - TOML 配置读取。
 - `src/error.rs`
@@ -103,11 +103,13 @@ bind_addr = "127.0.0.1:7634"
 level = "info"
 
 [sstable]
-path = "acorusdb.sst"
+dir = "data/sstables"
+prefix = "acorusdb"
 
 [wal]
-path = "acorusdb.wal"
-compact_threshold_bytes = 1024
+dir = "data/wal"
+prefix = "acorusdb"
+flush_threshold_entries = 1024
 ```
 
 字段说明：
@@ -116,12 +118,19 @@ compact_threshold_bytes = 1024
   - TCP 监听地址。
 - `logging.level`
   - tracing 日志级别，例如 `trace`、`debug`、`info`、`warn`、`error`。
-- `sstable.path`
-  - SSTable 文件路径。
-- `wal.path`
-  - WAL 文件路径。
-- `wal.compact_threshold_bytes`
-  - WAL 大于这个字节阈值后会触发 compact。
+- `sstable.dir`
+  - SSTable 目录。
+- `sstable.prefix`
+  - SSTable 文件前缀。当前会自动派生出：
+    - `<sstable.dir>/<sstable.prefix>-000001.sst`
+    - `<sstable.dir>/<sstable.prefix>-000002.sst`
+- `wal.dir`
+  - WAL 目录。
+- `wal.prefix`
+  - WAL 文件前缀。当前会自动派生出：
+    - `<wal.dir>/<wal.prefix>.wal`
+- `wal.flush_threshold_entries`
+  - active memtable 的 entry 数达到阈值后会触发 flush。
 
 ## 协议说明
 
@@ -187,22 +196,24 @@ client command
   -> protocol parse
   -> database execute
   -> WAL append + sync
-  -> apply to in-memory map
-  -> maybe compact
+  -> apply to active memtable
+  -> maybe flush
 ```
 
 当前恢复路径大致是：
 
 ```text
-load sstable
-  -> replay WAL
-  -> rebuild in-memory state
+scan matching sstables in directory
+  -> build read path from newest to oldest
+  -> replay WAL into active memtable
 ```
 
 当前实现特点：
 
 - WAL 每次写入后会 `flush + sync_all`
 - SSTable 写出会走临时文件、rename 和目录同步
+- flush 会写出新的编号 SSTable，并清空 WAL
+- 启动时会按新到旧顺序加载当前目录下属于这套数据的所有 SSTable
 - WAL reset 也做了同步处理
 - WAL 最后一行损坏会被视作可能的 torn write 并忽略
 - WAL 中间行损坏会作为错误上报
@@ -260,8 +271,8 @@ load sstable
 5. 对已经是 tombstone 的 key 再执行一次 `DEL`，返回 `false`。
 6. `SET` 可以覆盖 tombstone，使同一个 key 重新生效。
 7. WAL 中的 `Delete` 在恢复时会重建成 tombstone，而不是直接把 key 从内存表里移除。
-8. 当前 SSTable 也会持久化 tombstone，保证 compact 和重启后删除语义不丢失。
-9. 当前 compact 不会主动清理 tombstone，它只是把当前 `memtable` 状态落盘并清空 WAL。
+8. 当前 SSTable 也会持久化 tombstone，保证 flush 和重启后删除语义不丢失。
+9. 当前 flush 不会主动清理 tombstone，它只是把当前 `memtable` 状态落盘并清空 WAL。
 10. 未来进入 SSTable / LSM 阶段后，tombstone 会继续承担“遮蔽旧层旧值”的职责，并在合适的 compaction 时机清理。
 
 ## 错误处理
@@ -307,11 +318,12 @@ cargo test
 - `set/delete/restart` 恢复
 - tombstone 重启恢复与重复删除语义
 - `SET -> DEL -> SET` 之后的 key 复活语义
-- compact 后恢复
-- compact 后 tombstone 保留
+- flush 后恢复
+- flush 后 tombstone 保留
 - `sstable + wal` 叠加恢复
+- 多 SSTable 启动恢复和覆盖顺序
 - SSTable 直接读写、排序、tombstone 保留和损坏定位
-- 重启后和 compact 后的 key 顺序稳定性
+- 重启后和 flush 后的 key 顺序稳定性
 - WAL 损坏边界和字段定位
 - TCP 会话端到端读写
 - shutdown 时客户端收到 `BYE`
@@ -320,9 +332,10 @@ cargo test
 
 - 还不是 RESP 协议
 - 还不是 Redis 客户端兼容实现
-- 当前 SSTable 还是单文件、无索引、全量写出版本
+- 当前 SSTable 还没有 manifest、index、checksum 和 block 结构
+- 当前单表点查还是朴素实现，会直接加载整张表
 - 当前存储结构还不是 LSM Tree
-- 还没有 manifest、Bloom filter、后台 compaction 等能力
+- 还没有 manifest、Bloom filter、后台 compaction 和 merge compaction 等能力
 
 ## 下一步方向
 
@@ -330,6 +343,6 @@ cargo test
 
 核心方向是把当前存储引擎逐步演进成一个 mini-LSM：
 
-- 先把当前“单文件全量 compact”过渡成真正的 memtable flush
-- 然后支持多 SSTable 和 manifest
-- 最后再进入 merge compaction
+- 先补 manifest，把当前多 SSTable 集合管理起来
+- 然后引入 merge compaction
+- 最后再逐步补索引和读放大优化

@@ -29,10 +29,13 @@ pub async fn run(config: Config) -> AcorusResult<()> {
 
     tracing::info!(%addr, "acorusdb listening");
 
+    let sstable_base_path = config.sstable.base_path();
+    let wal_path = config.wal.path();
+
     let database = Arc::new(Database::open(
-        config.sstable.path.as_path(),
-        config.wal.path.as_path(),
-        config.wal.compact_threshold_bytes,
+        sstable_base_path.as_path(),
+        wal_path.as_path(),
+        config.wal.flush_threshold_entries,
     )?);
 
     let (shutdown_tx, _) = broadcast::channel(1);

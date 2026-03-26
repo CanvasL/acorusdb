@@ -264,6 +264,11 @@ impl SSTable {
         })
     }
 
+    pub fn get(&self, key: &str) -> AcorusResult<Option<MemValue>> {
+        let memtable = self.load_to_memtable()?;
+        Ok(memtable.get(key).cloned())
+    }
+
     pub fn write_from_memtable(&self, memtable: &BTreeMap<String, MemValue>) -> AcorusResult<()> {
         let sst_path = self.path.clone();
 
@@ -322,12 +327,12 @@ impl SSTable {
             })?;
         }
 
-        // First startup has no SSTable yet.
+        // This specific table file may not exist yet.
         if !sst_path.exists() {
             return Ok(BTreeMap::new());
         }
 
-        // Decode the SSTable file and rebuild the memtable in key order.
+        // Decode the SSTable file into an ordered in-memory map.
         let reader =
             File::open(&sst_path).map_err(|source| sstable_read_error(&sst_path, source))?;
         let mut reader = SstableReader::new(&sst_path, BufReader::new(reader));

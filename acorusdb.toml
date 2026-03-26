@@ -5,8 +5,10 @@ bind_addr = "127.0.0.1:7634"
 level = "info"
 
 [sstable]
-path = "data/acorusdb.sst"
+dir = "data/sstables"
+prefix = "acorusdb"
 
 [wal]
-path = "data/acorusdb.wal"
-compact_threshold_bytes = 1024
+dir = "data/wal"
+prefix = "acorusdb"
+flush_threshold_entries = 1024

@@ -10,7 +10,7 @@
 
 - [x] 把 [`src/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage_engine.rs) 里的内存结构从 `HashMap` 换成 `BTreeMap`。
 - [x] 保持当前写路径不变，仍然是 `WAL -> memtable apply`。
-- [x] 补测试，证明重启后和 compact 后的遍历顺序稳定。
+- [x] 补测试，证明重启后和 flush 后的遍历顺序稳定。
 - [x] 在引入磁盘有序表之前，先明确并写清楚 delete 的 tombstone 语义。
 
 ## 第二阶段：把当前单文件落盘结构演进成 SSTable V1
@@ -31,28 +31,28 @@
 
 ## 第三阶段：引入 memtable flush
 
-- [ ] 在概念和代码层都把当前单文件 SSTable 更明确地转成 flush 产物。
-- [ ] 当 memtable 达到阈值时触发 flush。
-- [ ] flush 流程至少包含：
-  - [ ] 写出新的不可变 SSTable
-  - [ ] 同步文件和目录
-  - [ ] reset WAL
-  - [ ] 保证宕机恢复路径仍然正确
-- [ ] 补测试覆盖 `set/delete -> flush -> restart -> recover`。
+- [x] 在概念和代码层都把当前单文件 SSTable 更明确地转成 flush 产物。
+- [x] 当 memtable 达到阈值时触发 flush。
+- [x] flush 流程至少包含：
+  - [x] 写出新的不可变 SSTable
+  - [x] 同步文件和目录
+  - [x] reset WAL
+  - [x] 保证宕机恢复路径仍然正确
+- [x] 补测试覆盖 `set/delete -> flush -> restart -> recover`。
 
 ## 第四阶段：支持多张表的读路径
 
-- [ ] `get` 查询顺序改成：
-  - [ ] 先查 memtable
-  - [ ] 再查最新 SSTable
-  - [ ] 再查更老的 SSTable
-- [ ] 维护表元数据，保证启动时知道有哪些 SSTable。
-- [ ] 第一版查找策略可以先简单，先不要过度优化。
-- [ ] 补多次 flush 后重启恢复的测试。
+- [x] `get` 查询顺序改成：
+  - [x] 先查 memtable
+  - [x] 再查最新 SSTable
+  - [x] 再查更老的 SSTable
+- [x] 维护表元数据，保证启动时知道有哪些 SSTable。
+- [x] 第一版查找策略可以先简单，先不要过度优化。
+- [x] 补多次 flush 后重启恢复的测试。
 
 ## 第五阶段：Compaction V1
 
-- [ ] 用 SSTable merge compaction 替代现在“单文件 SSTable + 清空 WAL”的 compact 思路。
+- [ ] 用 SSTable merge compaction 替代现在“多 SSTable + flush 但不做 merge”的思路。
 - [ ] 第一版只做手动触发或阈值触发，不做后台线程调度。
 - [ ] 支持把新旧 SSTable merge 成一个新表。
 - [ ] 在安全条件下丢弃旧值和无效 tombstone。
@@ -86,4 +86,4 @@
 
 ## 建议的下一步
 
-- [ ] 开始第三阶段，引入 memtable flush，把“全量 compact”逐步收敛成真正的 flush 路径。
+- [ ] 开始第六阶段：先补 manifest，把当前多 SSTable 集合管理起来。

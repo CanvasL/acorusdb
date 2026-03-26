@@ -22,15 +22,15 @@ pub struct Database {
 
 impl Database {
     pub fn open(
-        sstable_path: &Path,
+        sstable_base_path: &Path,
         wal_path: &Path,
-        wal_compact_threshold_bytes: usize,
+        flush_threshold_entries: usize,
     ) -> AcorusResult<Self> {
         Ok(Self {
             storage_engine: Mutex::new(StorageEngine::open(
-                sstable_path,
+                sstable_base_path,
                 wal_path,
-                wal_compact_threshold_bytes,
+                flush_threshold_entries,
             )?),
         })
     }
@@ -43,11 +43,9 @@ impl Database {
                 storage_engine.set(&key, &value)?;
                 Ok(ExecuteResult::Set)
             }
-            Command::Get { key } => Ok(ExecuteResult::Get(
-                storage_engine.get(&key).map(str::to_owned),
-            )),
+            Command::Get { key } => Ok(ExecuteResult::Get(storage_engine.get(&key)?)),
             Command::Exists { key } => {
-                Ok(ExecuteResult::Exists(storage_engine.get(&key).is_some()))
+                Ok(ExecuteResult::Exists(storage_engine.get(&key)?.is_some()))
             }
             Command::Del { key } => Ok(ExecuteResult::Delete(storage_engine.delete(&key)?)),
         }
