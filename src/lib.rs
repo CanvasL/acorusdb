@@ -3,6 +3,7 @@ pub mod config;
 pub mod database;
 pub mod error;
 pub mod fs_utils;
+pub mod manifest;
 pub mod protocol;
 pub mod server;
 pub mod session;

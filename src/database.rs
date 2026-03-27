@@ -22,12 +22,14 @@ pub struct Database {
 
 impl Database {
     pub fn open(
+        manifest_path: &Path,
         sstable_base_path: &Path,
         wal_path: &Path,
         flush_threshold_entries: usize,
     ) -> AcorusResult<Self> {
         Ok(Self {
             storage_engine: Mutex::new(StorageEngine::open(
+                manifest_path,
                 sstable_base_path,
                 wal_path,
                 flush_threshold_entries,

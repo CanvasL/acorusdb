@@ -93,6 +93,34 @@ pub enum AcorusError {
         location: String,
         message: String,
     },
+
+    #[error("failed to load manifest file {path}: {source}", path = .path.display())]
+    ManifestRead {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("failed to load manifest file {path}: {source}", path = .path.display())]
+    ManifestLoad {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+
+    #[error("failed to parse manifest file {path}: {source}", path = .path.display())]
+    ManifestParse {
+        path: PathBuf,
+        #[source]
+        source: toml::ser::Error,
+    },
+
+    #[error("failed to write manifest file {path}: {source}", path = .path.display())]
+    ManifestWrite {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 pub type AcorusResult<T> = std::result::Result<T, AcorusError>;

@@ -208,6 +208,7 @@ mod tests {
         async fn spawn() -> AcorusResult<Self> {
             let paths = TestPaths::new()?;
             let database = Arc::new(Database::open(
+                paths.manifest_path.as_path(),
                 paths.sstable_path.as_path(),
                 paths.wal_path.as_path(),
                 usize::MAX,
@@ -237,6 +238,7 @@ mod tests {
 
     struct TestPaths {
         root_dir: PathBuf,
+        manifest_path: PathBuf,
         sstable_path: PathBuf,
         wal_path: PathBuf,
     }
@@ -258,6 +260,7 @@ mod tests {
             fs::create_dir_all(&root_dir)?;
 
             Ok(Self {
+                manifest_path: root_dir.join("manifest.toml"),
                 sstable_path: root_dir.join("data.sst"),
                 wal_path: root_dir.join("data.wal"),
                 root_dir,

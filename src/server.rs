@@ -29,10 +29,12 @@ pub async fn run(config: Config) -> AcorusResult<()> {
 
     tracing::info!(%addr, "acorusdb listening");
 
+    let manifest_path = config.manifest.path();
     let sstable_base_path = config.sstable.base_path();
     let wal_path = config.wal.path();
 
     let database = Arc::new(Database::open(
+        manifest_path.as_path(),
         sstable_base_path.as_path(),
         wal_path.as_path(),
         config.wal.flush_threshold_entries,

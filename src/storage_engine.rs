@@ -13,6 +13,7 @@ use crate::{
         AcorusResult,
     },
     fs_utils::parent_dir_for_sync,
+    manifest::Manifest,
     sstable::SSTable,
     wal::{
         Wal,
@@ -102,9 +103,9 @@ impl SSTableLayout {
 
 /// Coordinates the active memtable, the on-disk SSTable set, and the WAL.
 ///
-/// Startup recovery discovers all SSTables that belong to the configured base path and then
-/// rebuilds only the active memtable from the WAL. Reads check the memtable first and then walk
-/// SSTables from newest to oldest so newer values and tombstones mask older tables.
+/// Startup recovery loads only the SSTables referenced by the manifest and then rebuilds the
+/// active memtable from the WAL. Reads check the memtable first and then walk SSTables from
+/// newest to oldest so newer values and tombstones mask older tables.
 pub struct StorageEngine {
     sstable_layout: SSTableLayout,
     next_sstable_id: u64,
@@ -112,17 +113,23 @@ pub struct StorageEngine {
     sstables: Vec<SSTable>,
     flush_threshold_entries: usize,
     wal: Wal,
+    manifest: Manifest,
 }
 
 impl StorageEngine {
-    /// Opens the engine by loading all SSTables under the configured base path and replaying the
-    /// WAL into the active memtable.
+    /// Opens the engine by loading the manifest's SSTables and replaying the WAL into the active
+    /// memtable.
     pub fn open(
+        manifest_path: &Path,
         sstable_base_path: &Path,
         wal_path: &Path,
         flush_threshold_entries: usize,
     ) -> AcorusResult<Self> {
-        let (sstable_layout, sstables, next_sstable_id) = load_sstables(sstable_base_path)?;
+        let manifest = Manifest::load(manifest_path)?;
+
+        let (sstable_layout, sstables, next_sstable_id) =
+            load_sstables(sstable_base_path, &manifest)?;
+
         let mut wal = Wal::open(wal_path)?;
         let entries = wal.read_entries()?;
 
@@ -133,6 +140,7 @@ impl StorageEngine {
             sstables,
             flush_threshold_entries,
             wal,
+            manifest,
         };
 
         for entry in entries {
@@ -192,6 +200,12 @@ impl StorageEngine {
         let new_table = SSTable::open(&new_path)?;
 
         new_table.write_from_memtable(&self.memtable)?;
+
+        self.manifest
+            .current_sstables
+            .push(new_path.to_string_lossy().to_string());
+        self.manifest.save_atomically()?;
+
         self.wal.reset()?;
 
         self.sstables.insert(0, new_table);
@@ -247,35 +261,25 @@ impl StorageEngine {
     }
 }
 
-fn load_sstables(base_path: &Path) -> AcorusResult<(SSTableLayout, Vec<SSTable>, u64)> {
+fn load_sstables(
+    base_path: &Path,
+    manifest: &Manifest,
+) -> AcorusResult<(SSTableLayout, Vec<SSTable>, u64)> {
     let layout = SSTableLayout::from_base_path(base_path)?;
     let mut files = Vec::new();
     let mut max_id = 0_u64;
 
-    let entries = fs::read_dir(&layout.dir).map_err(|source| AcorusError::SSTableRead {
-        path: layout.dir.clone(),
-        source,
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|source| AcorusError::SSTableRead {
-            path: layout.dir.clone(),
-            source,
+    for raw_path in &manifest.current_sstables {
+        let path = PathBuf::from(raw_path);
+        let id = layout.parse_table_id(&path)?.ok_or_else(|| {
+            invalid_sstable_filename(
+                &path,
+                format!(
+                    "manifest referenced unexpected sstable path {}",
+                    path.display()
+                ),
+            )
         })?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|source| AcorusError::SSTableRead {
-                path: path.clone(),
-                source,
-            })?;
-        if !file_type.is_file() {
-            continue;
-        }
-
-        let Some(id) = layout.parse_table_id(&path)? else {
-            continue;
-        };
 
         max_id = max_id.max(id);
         files.push((id, path));
@@ -305,7 +309,10 @@ mod tests {
     use std::{
         collections::BTreeMap,
         fs,
-        path::PathBuf,
+        path::{
+            Path,
+            PathBuf,
+        },
         sync::atomic::{
             AtomicU64,
             Ordering,
@@ -325,6 +332,7 @@ mod tests {
             AcorusError,
             AcorusResult,
         },
+        manifest::Manifest,
         sstable::SSTable,
         wal::WalEntry,
     };
@@ -508,10 +516,11 @@ mod tests {
     }
 
     #[test]
-    fn loads_all_sstables_from_directory_during_recovery() -> AcorusResult<()> {
+    fn loads_all_sstables_listed_in_manifest_during_recovery() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
 
-        let old_table = SSTable::open(paths.numbered_sstable_path(1).as_path())?;
+        let old_path = paths.numbered_sstable_path(1);
+        let old_table = SSTable::open(old_path.as_path())?;
         old_table.write_from_memtable(&BTreeMap::from([
             ("name".to_string(), MemValue::Value("old".to_string())),
             (
@@ -520,11 +529,14 @@ mod tests {
             ),
         ]))?;
 
-        let new_table = SSTable::open(paths.numbered_sstable_path(2).as_path())?;
+        let new_path = paths.numbered_sstable_path(2);
+        let new_table = SSTable::open(new_path.as_path())?;
         new_table.write_from_memtable(&BTreeMap::from([
             ("name".to_string(), MemValue::Value("new".to_string())),
             ("deleted".to_string(), MemValue::Tombstone),
         ]))?;
+
+        paths.write_manifest([old_path.as_path(), new_path.as_path()])?;
 
         let engine = open_engine(&paths, usize::MAX)?;
         assert_eq!(engine.get("name")?, Some("new".to_string()));
@@ -534,13 +546,41 @@ mod tests {
     }
 
     #[test]
+    fn ignores_sstables_not_listed_in_manifest() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+
+        let visible_path = paths.numbered_sstable_path(1);
+        let visible_table = SSTable::open(visible_path.as_path())?;
+        visible_table.write_from_memtable(&BTreeMap::from([(
+            "name".to_string(),
+            MemValue::Value("visible".to_string()),
+        )]))?;
+
+        let orphan_path = paths.numbered_sstable_path(2);
+        let orphan_table = SSTable::open(orphan_path.as_path())?;
+        orphan_table.write_from_memtable(&BTreeMap::from([(
+            "name".to_string(),
+            MemValue::Value("orphan".to_string()),
+        )]))?;
+
+        paths.write_manifest([visible_path.as_path()])?;
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("name")?, Some("visible".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
     fn delete_can_target_key_only_present_in_older_sstable() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
-        let table = SSTable::open(paths.numbered_sstable_path(1).as_path())?;
+        let table_path = paths.numbered_sstable_path(1);
+        let table = SSTable::open(table_path.as_path())?;
         table.write_from_memtable(&BTreeMap::from([(
             "name".to_string(),
             MemValue::Value("fan".to_string()),
         )]))?;
+        paths.write_manifest([table_path.as_path()])?;
 
         {
             let mut engine = open_engine(&paths, usize::MAX)?;
@@ -599,6 +639,7 @@ mod tests {
         flush_threshold_entries: usize,
     ) -> AcorusResult<StorageEngine> {
         StorageEngine::open(
+            paths.manifest_path.as_path(),
             paths.sstable_base_path.as_path(),
             paths.wal_path.as_path(),
             flush_threshold_entries,
@@ -633,6 +674,7 @@ mod tests {
 
     struct TestPaths {
         root_dir: PathBuf,
+        manifest_path: PathBuf,
         sstable_base_path: PathBuf,
         wal_path: PathBuf,
     }
@@ -654,6 +696,7 @@ mod tests {
             fs::create_dir_all(&root_dir)?;
 
             Ok(Self {
+                manifest_path: root_dir.join("manifest.toml"),
                 sstable_base_path: root_dir.join("data.sst"),
                 wal_path: root_dir.join("data.wal"),
                 root_dir,
@@ -662,6 +705,18 @@ mod tests {
 
         fn numbered_sstable_path(&self, id: u64) -> PathBuf {
             self.root_dir.join(format!("data-{id:06}.sst"))
+        }
+
+        fn write_manifest<'a>(
+            &self,
+            current_sstables: impl IntoIterator<Item = &'a Path>,
+        ) -> AcorusResult<()> {
+            let mut manifest = Manifest::new(&self.manifest_path);
+            manifest.current_sstables = current_sstables
+                .into_iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect();
+            manifest.save_atomically()
         }
 
         fn sstable_files(&self) -> AcorusResult<Vec<PathBuf>> {

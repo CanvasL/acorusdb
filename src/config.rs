@@ -1,3 +1,4 @@
+use core::str;
 use std::{
     fs,
     path::{
@@ -17,6 +18,7 @@ use crate::error::{
 pub struct Config {
     pub server: ServerConfig,
     pub logging: LoggingConfig,
+    pub manifest: ManifestConfig,
     pub sstable: SSTableConfig,
     pub wal: WalConfig,
 }
@@ -46,6 +48,27 @@ impl Default for LoggingConfig {
         Self {
             level: "info".to_string(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestConfig {
+    pub dir: PathBuf,
+    pub prefix: String,
+}
+
+impl Default for ManifestConfig {
+    fn default() -> Self {
+        Self {
+            dir: PathBuf::from("data"),
+            prefix: "manifest".to_string(),
+        }
+    }
+}
+
+impl ManifestConfig {
+    pub fn path(&self) -> PathBuf {
+        self.dir.join(format!("{}.toml", self.prefix))
     }
 }
 
@@ -112,6 +135,7 @@ struct RawConfig {
     server: ServerConfig,
     logging: LoggingConfig,
     storage: Option<SharedStorageConfig>,
+    manifest: RawManifestConfig,
     sstable: RawSSTableConfig,
     wal: RawWalConfig,
 }
@@ -119,6 +143,13 @@ struct RawConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 struct SharedStorageConfig {
+    dir: Option<PathBuf>,
+    prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+struct RawManifestConfig {
     dir: Option<PathBuf>,
     prefix: Option<String>,
 }
@@ -154,15 +185,35 @@ impl Default for RawWalConfig {
 impl From<RawConfig> for Config {
     fn from(raw: RawConfig) -> Self {
         let shared = raw.storage;
+        let manifest = build_manifest_config(raw.manifest, shared.as_ref());
         let sstable = build_sstable_config(raw.sstable, shared.as_ref());
         let wal = build_wal_config(raw.wal, shared.as_ref());
 
         Self {
             server: raw.server,
             logging: raw.logging,
+            manifest,
             sstable,
             wal,
         }
+    }
+}
+
+fn build_manifest_config(
+    raw: RawManifestConfig,
+    shared: Option<&SharedStorageConfig>,
+) -> ManifestConfig {
+    let defaults = ManifestConfig::default();
+
+    ManifestConfig {
+        dir: raw
+            .dir
+            .or_else(|| shared.and_then(|storage| storage.dir.clone()))
+            .unwrap_or(defaults.dir),
+        prefix: raw
+            .prefix
+            .or_else(|| shared.and_then(|storage| storage.prefix.clone()))
+            .unwrap_or(defaults.prefix),
     }
 }
 
