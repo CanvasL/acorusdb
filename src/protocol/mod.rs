@@ -1,3 +1,5 @@
+pub mod command;
+
 use std::io;
 
 use tokio::io::{
