@@ -61,12 +61,12 @@ pub struct SSTable {
     path: PathBuf,
 }
 
-struct SstableWriter<'a, W> {
+struct SSTableWriter<'a, W> {
     path: &'a Path,
     writer: W,
 }
 
-impl<'a, W: Write> SstableWriter<'a, W> {
+impl<'a, W: Write> SSTableWriter<'a, W> {
     fn new(path: &'a Path, writer: W) -> Self {
         Self { path, writer }
     }
@@ -126,12 +126,12 @@ impl<'a, W: Write> SstableWriter<'a, W> {
     }
 }
 
-struct SstableReader<'a, R> {
+struct SSTableReader<'a, R> {
     path: &'a Path,
     reader: R,
 }
 
-impl<'a, R: Read> SstableReader<'a, R> {
+impl<'a, R: Read> SSTableReader<'a, R> {
     fn new(path: &'a Path, reader: R) -> Self {
         Self { path, reader }
     }
@@ -283,7 +283,7 @@ impl SSTable {
 
         let tmp_file =
             File::create(&tmp_path).map_err(|source| sstable_write_error(&tmp_path, source))?;
-        let mut writer = SstableWriter::new(&tmp_path, BufWriter::new(tmp_file));
+        let mut writer = SSTableWriter::new(&tmp_path, BufWriter::new(tmp_file));
 
         writer.write_header(entry_count)?;
 
@@ -335,7 +335,7 @@ impl SSTable {
         // Decode the SSTable file into an ordered in-memory map.
         let reader =
             File::open(&sst_path).map_err(|source| sstable_read_error(&sst_path, source))?;
-        let mut reader = SstableReader::new(&sst_path, BufReader::new(reader));
+        let mut reader = SSTableReader::new(&sst_path, BufReader::new(reader));
 
         let entry_count = reader.read_header()?;
 
@@ -445,8 +445,8 @@ mod tests {
 
     use super::{
         SSTable,
-        SstableReader,
-        SstableWriter,
+        SSTableReader,
+        SSTableWriter,
         format::{
             self,
             ValueTag,
@@ -516,7 +516,7 @@ mod tests {
         sstable.write_from_memtable(&memtable)?;
 
         let file = File::open(paths.sstable_path.as_path())?;
-        let mut reader = SstableReader::new(paths.sstable_path.as_path(), BufReader::new(file));
+        let mut reader = SSTableReader::new(paths.sstable_path.as_path(), BufReader::new(file));
         let entry_count = reader.read_header()?;
         let mut keys = Vec::new();
         for entry_index in 0..entry_count {
@@ -573,7 +573,7 @@ mod tests {
     fn rejects_out_of_order_keys() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let file = File::create(paths.sstable_path.as_path())?;
-        let mut writer = SstableWriter::new(paths.sstable_path.as_path(), BufWriter::new(file));
+        let mut writer = SSTableWriter::new(paths.sstable_path.as_path(), BufWriter::new(file));
 
         writer.write_header(2)?;
         writer.write_entry("c", &MemValue::Value("3".to_string()))?;
@@ -621,7 +621,7 @@ mod tests {
     fn rejects_unknown_value_tag() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let file = File::create(paths.sstable_path.as_path())?;
-        let mut writer = SstableWriter::new(paths.sstable_path.as_path(), BufWriter::new(file));
+        let mut writer = SSTableWriter::new(paths.sstable_path.as_path(), BufWriter::new(file));
 
         writer.write_header(1)?;
         writer.write_bytes(b"name", "key")?;
@@ -643,7 +643,7 @@ mod tests {
     fn rejects_truncated_value_bytes() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let file = File::create(paths.sstable_path.as_path())?;
-        let mut writer = SstableWriter::new(paths.sstable_path.as_path(), BufWriter::new(file));
+        let mut writer = SSTableWriter::new(paths.sstable_path.as_path(), BufWriter::new(file));
 
         writer.write_header(1)?;
         write_entry_prefix_with_tag(&mut writer, "name", ValueTag::Value)?;
@@ -663,7 +663,7 @@ mod tests {
     }
 
     fn write_entry_prefix_with_tag<W: Write>(
-        writer: &mut SstableWriter<'_, W>,
+        writer: &mut SSTableWriter<'_, W>,
         key: &str,
         tag: ValueTag,
     ) -> AcorusResult<()> {
