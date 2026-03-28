@@ -8,7 +8,7 @@
 
 ## 第一阶段：先把当前引擎整理好
 
-- [x] 把 [`src/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage_engine.rs) 里的内存结构从 `HashMap` 换成 `BTreeMap`。
+- [x] 把 [`src/storage/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage/storage_engine.rs) 里的内存结构从 `HashMap` 换成 `BTreeMap`。
 - [x] 保持当前写路径不变，仍然是 `WAL -> memtable apply`。
 - [x] 补测试，证明重启后和 flush 后的遍历顺序稳定。
 - [x] 在引入磁盘有序表之前，先明确并写清楚 delete 的 tombstone 语义。
@@ -16,7 +16,7 @@
 ## 第二阶段：把当前单文件落盘结构演进成 SSTable V1
 
 - [x] 把主路径代码、配置和文档里的 `snapshot` 命名逐步退场，统一成 `sstable`。
-- [x] 把 [`src/sstable.rs`](/Users/fan/MyProjects/acorusdb/src/sstable.rs) 从“整张表序列化”继续演进成“更像 SSTable 的有序、不可变表文件”。
+- [x] 把 [`src/storage/sstable.rs`](/Users/fan/MyProjects/acorusdb/src/storage/sstable.rs) 从“整张表序列化”继续演进成“更像 SSTable 的有序、不可变表文件”。
 - [x] 先定义一个足够简单的 SSTable 文件格式：
   - [x] 文件头
   - [x] 按 key 排序的记录
@@ -63,12 +63,16 @@
 
 ## 第六阶段：元数据与恢复
 
-- [ ] 增加 manifest 或等价元数据文件，用来记录 SSTable 列表。
-- [ ] 启动恢复路径改成：
-  - [ ] 先加载 manifest / 表列表
-  - [ ] 再通过 WAL 回放恢复 memtable
-- [ ] 保证新 SSTable 创建和旧文件替换过程具备 crash safety。
-- [ ] 补 manifest 和 SSTable 损坏场景的恢复测试。
+- [x] 增加 manifest 元数据文件，用来记录 SSTable 列表。
+- [x] 启动恢复路径改成：
+  - [x] 先加载 manifest / 表列表
+  - [x] 再通过 WAL 回放恢复 memtable
+- [x] 保证新 SSTable 创建和 WAL reset 过程具备 crash safety。
+- [ ] 补恢复相关测试：
+  - [x] manifest 列表驱动的 SSTable 加载测试
+  - [x] orphan SSTable 不参与恢复测试
+  - [x] SSTable 损坏定位测试
+  - [x] manifest 文件损坏时的恢复 / 报错测试
 
 ## 第七阶段：可选性能工作
 
@@ -86,4 +90,4 @@
 
 ## 建议的下一步
 
-- [ ] 开始第六阶段：先补 manifest，把当前多 SSTable 集合管理起来。
+- [ ] 开始第5阶段：先做手动触发的 SSTable merge compaction。

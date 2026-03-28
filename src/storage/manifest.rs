@@ -206,7 +206,10 @@ mod tests {
     };
 
     use super::Manifest;
-    use crate::error::AcorusResult;
+    use crate::error::{
+        AcorusError,
+        AcorusResult,
+    };
 
     #[test]
     fn load_creates_missing_parent_directories() -> AcorusResult<()> {
@@ -218,6 +221,46 @@ mod tests {
         assert_eq!(manifest.version, 1);
         assert!(manifest.current_sstables.is_empty());
         assert!(manifest_path.exists());
+
+        fs::remove_dir_all(root_dir)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_rejects_invalid_toml() -> AcorusResult<()> {
+        let root_dir = unique_test_dir("manifest");
+        let manifest_path = root_dir.join("manifest.toml");
+        fs::create_dir_all(&root_dir)?;
+
+        fs::write(&manifest_path, "version = {")?;
+
+        let err = Manifest::load(&manifest_path)
+            .expect_err("expected invalid TOML to fail manifest load");
+        assert!(matches!(err, AcorusError::ManifestLoad { .. }));
+
+        fs::remove_dir_all(root_dir)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_rejects_invalid_field_types() -> AcorusResult<()> {
+        let root_dir = unique_test_dir("manifest");
+        let manifest_path = root_dir.join("manifest.toml");
+        fs::create_dir_all(&root_dir)?;
+
+        fs::write(
+            &manifest_path,
+            r#"
+version = 1
+current_sstables = "not-an-array"
+"#,
+        )?;
+
+        let err = Manifest::load(&manifest_path)
+            .expect_err("expected invalid field types to fail manifest load");
+        assert!(matches!(err, AcorusError::ManifestLoad { .. }));
 
         fs::remove_dir_all(root_dir)?;
 

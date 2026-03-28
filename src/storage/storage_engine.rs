@@ -572,6 +572,29 @@ mod tests {
     }
 
     #[test]
+    fn recovery_rejects_manifest_with_invalid_sstable_name() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+        let invalid_path = paths.root_dir.join("bad-file-name.txt");
+
+        fs::write(
+            &paths.manifest_path,
+            format!(
+                "version = 1\ncurrent_sstables = [\"{}\"]\n",
+                invalid_path.display()
+            ),
+        )?;
+
+        let err = open_engine(&paths, usize::MAX)
+            .err()
+            .expect("expected invalid manifest sstable path to fail recovery");
+        assert!(
+            matches!(err, AcorusError::CorruptedSSTable { ref location, .. } if location == "filename")
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn delete_can_target_key_only_present_in_older_sstable() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let table_path = paths.numbered_sstable_path(1);
