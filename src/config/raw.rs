@@ -1,11 +1,8 @@
-use std::path::{
-    Path,
-    PathBuf,
-};
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use super::{
+use super::types::{
     Config,
     LoggingConfig,
     ManifestConfig,
@@ -143,11 +140,4 @@ fn build_wal_config(raw: RawWalConfig, shared: Option<&SharedStorageConfig>) -> 
             .unwrap_or(defaults.prefix),
         flush_threshold_entries: raw.flush_threshold_entries,
     }
-}
-
-pub(super) fn config_parent_dir(path: &Path) -> PathBuf {
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf()
 }
