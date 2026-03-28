@@ -188,7 +188,7 @@ impl WalDecodeError {
 }
 
 impl Wal {
-    pub fn open(path: &Path) -> AcorusResult<Self> {
+    pub fn open_or_create(path: &Path) -> AcorusResult<Self> {
         ensure_parent_dir(path)?;
 
         let file = OpenOptions::new()
@@ -471,7 +471,7 @@ mod tests {
         let paths = TestPaths::new()?;
         fs::write(&paths.wal_path, "SET\tkey\tbad\\x\nDEL\tname\n")?;
 
-        let err = Wal::open(paths.wal_path.as_path())?
+        let err = Wal::open_or_create(paths.wal_path.as_path())?
             .read_entries()
             .expect_err("expected corrupted wal to fail");
 
@@ -488,7 +488,7 @@ mod tests {
         let paths = TestPaths::new()?;
         fs::write(&paths.wal_path, "BAD\tkey\tvalue\nDEL\tname\n")?;
 
-        let err = Wal::open(paths.wal_path.as_path())?
+        let err = Wal::open_or_create(paths.wal_path.as_path())?
             .read_entries()
             .expect_err("unknown opcode should fail");
 
@@ -505,7 +505,7 @@ mod tests {
         let paths = TestPaths::new()?;
         fs::write(&paths.wal_path, "DEL\tname\textra\nSET\tkey\tvalue\n")?;
 
-        let err = Wal::open(paths.wal_path.as_path())?
+        let err = Wal::open_or_create(paths.wal_path.as_path())?
             .read_entries()
             .expect_err("trailing fields should fail");
 

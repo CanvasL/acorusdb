@@ -15,6 +15,10 @@ use crate::{
     },
     session,
     shutdown::wait_for_shutdown_signal,
+    storage_engine::{
+        StoragePaths,
+        StoragePolicy,
+    },
 };
 
 pub async fn run(config: Config) -> AcorusResult<()> {
@@ -34,11 +38,11 @@ pub async fn run(config: Config) -> AcorusResult<()> {
     let wal_path = config.wal.path();
 
     let database = Arc::new(Database::open(
-        manifest_path.as_path(),
-        sstable_base_path.as_path(),
-        wal_path.as_path(),
-        config.wal.flush_threshold_entries,
-        config.sstable.compact_threshold_bytes,
+        StoragePaths::new(manifest_path, sstable_base_path, wal_path),
+        StoragePolicy::new(
+            config.wal.flush_threshold_entries,
+            config.sstable.compact_threshold_bytes,
+        ),
     )?);
 
     let (shutdown_tx, _) = broadcast::channel(1);

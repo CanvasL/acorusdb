@@ -1,11 +1,13 @@
-use std::path::Path;
-
 use tokio::sync::Mutex;
 
 use crate::{
     command::Command,
     error::AcorusResult,
-    storage_engine::StorageEngine,
+    storage_engine::{
+        StorageEngine,
+        StoragePaths,
+        StoragePolicy,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,21 +23,9 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn open(
-        manifest_path: &Path,
-        sstable_base_path: &Path,
-        wal_path: &Path,
-        flush_threshold_entries: usize,
-        compact_threshold_bytes: u64,
-    ) -> AcorusResult<Self> {
+    pub fn open(paths: StoragePaths, policy: StoragePolicy) -> AcorusResult<Self> {
         Ok(Self {
-            storage_engine: Mutex::new(StorageEngine::open(
-                manifest_path,
-                sstable_base_path,
-                wal_path,
-                flush_threshold_entries,
-                compact_threshold_bytes,
-            )?),
+            storage_engine: Mutex::new(StorageEngine::open(paths, policy)?),
         })
     }
 

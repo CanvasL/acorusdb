@@ -15,17 +15,12 @@ use crate::{
     fs_utils::parent_dir_for_sync,
     manifest::Manifest,
     sstable::SSTable,
+    storage::MemValue,
     wal::{
         Wal,
         WalEntry,
     },
 };
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum MemValue {
-    Value(String),
-    Tombstone,
-}
 
 #[derive(Debug, Clone)]
 struct SSTableLayout {
@@ -106,6 +101,62 @@ impl SSTableLayout {
 /// Startup recovery loads only the SSTables referenced by the manifest and then rebuilds the
 /// active memtable from the WAL. Reads check the memtable first and then walk SSTables from
 /// newest to oldest so newer values and tombstones mask older tables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoragePaths {
+    manifest_path: PathBuf,
+    sstable_base_path: PathBuf,
+    wal_path: PathBuf,
+}
+
+impl StoragePaths {
+    pub fn new(
+        manifest_path: impl Into<PathBuf>,
+        sstable_base_path: impl Into<PathBuf>,
+        wal_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            manifest_path: manifest_path.into(),
+            sstable_base_path: sstable_base_path.into(),
+            wal_path: wal_path.into(),
+        }
+    }
+
+    pub fn manifest_path(&self) -> &Path {
+        &self.manifest_path
+    }
+
+    pub fn sstable_base_path(&self) -> &Path {
+        &self.sstable_base_path
+    }
+
+    pub fn wal_path(&self) -> &Path {
+        &self.wal_path
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoragePolicy {
+    flush_threshold_entries: usize,
+    compact_threshold_bytes: u64,
+}
+
+impl StoragePolicy {
+    pub const fn new(flush_threshold_entries: usize, compact_threshold_bytes: u64) -> Self {
+        Self {
+            flush_threshold_entries,
+            compact_threshold_bytes,
+        }
+    }
+
+    pub const fn flush_threshold_entries(self) -> usize {
+        self.flush_threshold_entries
+    }
+
+    pub const fn compact_threshold_bytes(self) -> u64 {
+        self.compact_threshold_bytes
+    }
+}
+
 pub struct StorageEngine {
     sstable_layout: SSTableLayout,
     next_sstable_id: u64,
@@ -120,19 +171,13 @@ pub struct StorageEngine {
 impl StorageEngine {
     /// Opens the engine by loading the manifest's SSTables and replaying the WAL into the active
     /// memtable.
-    pub fn open(
-        manifest_path: &Path,
-        sstable_base_path: &Path,
-        wal_path: &Path,
-        flush_threshold_entries: usize,
-        compact_threshold_bytes: u64,
-    ) -> AcorusResult<Self> {
-        let manifest = Manifest::load(manifest_path)?;
+    pub fn open(paths: StoragePaths, policy: StoragePolicy) -> AcorusResult<Self> {
+        let manifest = Manifest::load_or_create(paths.manifest_path())?;
 
         let (sstable_layout, sstables, next_sstable_id) =
-            load_sstables(sstable_base_path, &manifest)?;
+            load_sstables(paths.sstable_base_path(), manifest.current_sstables())?;
 
-        let mut wal = Wal::open(wal_path)?;
+        let mut wal = Wal::open_or_create(paths.wal_path())?;
         let entries = wal.read_entries()?;
 
         let mut engine = Self {
@@ -140,8 +185,8 @@ impl StorageEngine {
             next_sstable_id,
             memtable: BTreeMap::new(),
             sstables,
-            flush_threshold_entries,
-            compact_threshold_bytes,
+            flush_threshold_entries: policy.flush_threshold_entries(),
+            compact_threshold_bytes: policy.compact_threshold_bytes(),
             wal,
             manifest,
         };
@@ -216,17 +261,14 @@ impl StorageEngine {
         // longer needs to mask data in an older active table and can be dropped safely.
         merged_memtable.retain(|_, value| matches!(value, MemValue::Value(_)));
 
-        let merged_sstable = SSTable::open(&self.next_sstable_path())?;
+        let merged_sstable = SSTable::at_path(&self.next_sstable_path())?;
         merged_sstable.write_from_memtable(&merged_memtable)?;
         self.next_sstable_id += 1;
 
         self.sstables.clear();
         self.sstables.push(merged_sstable.clone());
 
-        self.manifest.current_sstables.clear();
-        self.manifest
-            .current_sstables
-            .push(merged_sstable.path.to_string_lossy().to_string());
+        self.manifest.replace_tables([merged_sstable.path()]);
         self.manifest.save_atomically()?;
 
         remove_sstables(&sstables_from_old_to_new)?;
@@ -241,13 +283,11 @@ impl StorageEngine {
         }
 
         let new_path = self.next_sstable_path();
-        let new_table = SSTable::open(&new_path)?;
+        let new_table = SSTable::at_path(&new_path)?;
 
         new_table.write_from_memtable(&self.memtable)?;
 
-        self.manifest
-            .current_sstables
-            .push(new_path.to_string_lossy().to_string());
+        self.manifest.append_table(new_path.as_path());
         self.manifest.save_atomically()?;
 
         self.wal.reset()?;
@@ -310,7 +350,7 @@ impl StorageEngine {
         }
 
         for sstable in &self.sstables {
-            if let Some(value) = sstable.get(key)? {
+            if let Some(value) = sstable.load_value(key)? {
                 return Ok(Some(value));
             }
         }
@@ -340,13 +380,13 @@ impl StorageEngine {
 
 fn load_sstables(
     base_path: &Path,
-    manifest: &Manifest,
+    manifest_paths: &[String],
 ) -> AcorusResult<(SSTableLayout, Vec<SSTable>, u64)> {
     let layout = SSTableLayout::from_base_path(base_path)?;
     let mut files = Vec::new();
     let mut max_id = 0_u64;
 
-    for raw_path in &manifest.current_sstables {
+    for raw_path in manifest_paths {
         let path = PathBuf::from(raw_path);
         let id = layout.parse_table_id(&path)?.ok_or_else(|| {
             invalid_sstable_filename(
@@ -366,7 +406,7 @@ fn load_sstables(
 
     let sstables = files
         .into_iter()
-        .map(|(_, path)| SSTable::open(&path))
+        .map(|(_, path)| SSTable::at_path(&path))
         .collect::<AcorusResult<Vec<_>>>()?;
     let next_sstable_id = max_id.saturating_add(1).max(1);
 
@@ -375,8 +415,8 @@ fn load_sstables(
 
 fn remove_sstables(sstables: &[SSTable]) -> AcorusResult<()> {
     for sstable in sstables {
-        fs::remove_file(&sstable.path).map_err(|source| AcorusError::SSTableRemove {
-            path: sstable.path.clone(),
+        fs::remove_file(sstable.path()).map_err(|source| AcorusError::SSTableRemove {
+            path: sstable.path().to_path_buf(),
             source,
         })?;
     }
@@ -411,8 +451,9 @@ mod tests {
     };
 
     use super::{
-        MemValue,
         StorageEngine,
+        StoragePaths,
+        StoragePolicy,
     };
     use crate::{
         error::{
@@ -421,6 +462,7 @@ mod tests {
         },
         manifest::Manifest,
         sstable::SSTable,
+        storage::MemValue,
         wal::WalEntry,
     };
 
@@ -577,7 +619,7 @@ mod tests {
             .into_iter()
             .next()
             .expect("expected compacted sstable");
-        let compacted = SSTable::open(compacted_path.as_path())?;
+        let compacted = SSTable::at_path(compacted_path.as_path())?;
         assert!(!compacted.load_to_memtable()?.contains_key("name"));
 
         let engine = open_engine(&paths, usize::MAX)?;
@@ -651,7 +693,7 @@ mod tests {
         let paths = TestPaths::new()?;
 
         let old_path = paths.numbered_sstable_path(1);
-        let old_table = SSTable::open(old_path.as_path())?;
+        let old_table = SSTable::at_path(old_path.as_path())?;
         old_table.write_from_memtable(&BTreeMap::from([
             ("name".to_string(), MemValue::Value("old".to_string())),
             (
@@ -661,7 +703,7 @@ mod tests {
         ]))?;
 
         let new_path = paths.numbered_sstable_path(2);
-        let new_table = SSTable::open(new_path.as_path())?;
+        let new_table = SSTable::at_path(new_path.as_path())?;
         new_table.write_from_memtable(&BTreeMap::from([
             ("name".to_string(), MemValue::Value("new".to_string())),
             ("deleted".to_string(), MemValue::Tombstone),
@@ -681,14 +723,14 @@ mod tests {
         let paths = TestPaths::new()?;
 
         let visible_path = paths.numbered_sstable_path(1);
-        let visible_table = SSTable::open(visible_path.as_path())?;
+        let visible_table = SSTable::at_path(visible_path.as_path())?;
         visible_table.write_from_memtable(&BTreeMap::from([(
             "name".to_string(),
             MemValue::Value("visible".to_string()),
         )]))?;
 
         let orphan_path = paths.numbered_sstable_path(2);
-        let orphan_table = SSTable::open(orphan_path.as_path())?;
+        let orphan_table = SSTable::at_path(orphan_path.as_path())?;
         orphan_table.write_from_memtable(&BTreeMap::from([(
             "name".to_string(),
             MemValue::Value("orphan".to_string()),
@@ -729,7 +771,7 @@ mod tests {
     fn delete_can_target_key_only_present_in_older_sstable() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
         let table_path = paths.numbered_sstable_path(1);
-        let table = SSTable::open(table_path.as_path())?;
+        let table = SSTable::at_path(table_path.as_path())?;
         table.write_from_memtable(&BTreeMap::from([(
             "name".to_string(),
             MemValue::Value("fan".to_string()),
@@ -801,11 +843,12 @@ mod tests {
         compact_threshold_bytes: u64,
     ) -> AcorusResult<StorageEngine> {
         StorageEngine::open(
-            paths.manifest_path.as_path(),
-            paths.sstable_base_path.as_path(),
-            paths.wal_path.as_path(),
-            flush_threshold_entries,
-            compact_threshold_bytes,
+            StoragePaths::new(
+                paths.manifest_path.clone(),
+                paths.sstable_base_path.clone(),
+                paths.wal_path.clone(),
+            ),
+            StoragePolicy::new(flush_threshold_entries, compact_threshold_bytes),
         )
     }
 
@@ -875,10 +918,7 @@ mod tests {
             current_sstables: impl IntoIterator<Item = &'a Path>,
         ) -> AcorusResult<()> {
             let mut manifest = Manifest::new(&self.manifest_path);
-            manifest.current_sstables = current_sstables
-                .into_iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect();
+            manifest.replace_tables(current_sstables);
             manifest.save_atomically()
         }
 

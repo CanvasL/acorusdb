@@ -48,9 +48,9 @@ impl ManifestFile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
-    pub path: PathBuf,
-    pub version: u64,
-    pub current_sstables: Vec<String>,
+    path: PathBuf,
+    version: u64,
+    current_sstables: Vec<String>,
 }
 
 impl Manifest {
@@ -60,7 +60,7 @@ impl Manifest {
         Self::from_file(path, ManifestFile::new())
     }
 
-    pub fn load(path: &Path) -> AcorusResult<Self> {
+    pub fn load_or_create(path: &Path) -> AcorusResult<Self> {
         if !path.exists() {
             let manifest = Self::new(path);
             manifest.save_atomically()?;
@@ -74,6 +74,30 @@ impl Manifest {
         let manifest_file = reader.read_manifest_file()?;
 
         Ok(Self::from_file(path, manifest_file))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn current_sstables(&self) -> &[String] {
+        &self.current_sstables
+    }
+
+    pub fn append_table(&mut self, path: &Path) {
+        self.current_sstables
+            .push(path.to_string_lossy().to_string());
+    }
+
+    pub fn replace_tables<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) {
+        self.current_sstables = paths
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
     }
 
     pub fn save_atomically(&self) -> AcorusResult<()> {
@@ -229,10 +253,10 @@ mod tests {
         let root_dir = unique_test_dir("manifest");
         let manifest_path = root_dir.join("nested/state/manifest.toml");
 
-        let manifest = Manifest::load(&manifest_path)?;
+        let manifest = Manifest::load_or_create(&manifest_path)?;
 
-        assert_eq!(manifest.version, 1);
-        assert!(manifest.current_sstables.is_empty());
+        assert_eq!(manifest.version(), 1);
+        assert!(manifest.current_sstables().is_empty());
         assert!(manifest_path.exists());
 
         fs::remove_dir_all(root_dir)?;
@@ -248,7 +272,7 @@ mod tests {
 
         fs::write(&manifest_path, "version = {")?;
 
-        let err = Manifest::load(&manifest_path)
+        let err = Manifest::load_or_create(&manifest_path)
             .expect_err("expected invalid TOML to fail manifest load");
         assert!(matches!(err, AcorusError::ManifestLoad { .. }));
 
@@ -271,7 +295,7 @@ current_sstables = "not-an-array"
 "#,
         )?;
 
-        let err = Manifest::load(&manifest_path)
+        let err = Manifest::load_or_create(&manifest_path)
             .expect_err("expected invalid field types to fail manifest load");
         assert!(matches!(err, AcorusError::ManifestLoad { .. }));
 
@@ -285,23 +309,16 @@ current_sstables = "not-an-array"
         let root_dir = unique_test_dir("manifest");
         let manifest_path = root_dir.join("manifest.toml");
         let mut manifest = Manifest::new(&manifest_path);
-        manifest.current_sstables = vec![
-            root_dir
-                .join("data-000001.sst")
-                .to_string_lossy()
-                .to_string(),
-            root_dir
-                .join("data-000002.sst")
-                .to_string_lossy()
-                .to_string(),
-        ];
+        let first = root_dir.join("data-000001.sst");
+        let second = root_dir.join("data-000002.sst");
+        manifest.replace_tables([first.as_path(), second.as_path()]);
 
         manifest.save_atomically()?;
 
-        let loaded = Manifest::load(&manifest_path)?;
+        let loaded = Manifest::load_or_create(&manifest_path)?;
 
-        assert_eq!(loaded.version, manifest.version);
-        assert_eq!(loaded.current_sstables, manifest.current_sstables);
+        assert_eq!(loaded.version(), manifest.version());
+        assert_eq!(loaded.current_sstables(), manifest.current_sstables());
 
         fs::remove_dir_all(root_dir)?;
 

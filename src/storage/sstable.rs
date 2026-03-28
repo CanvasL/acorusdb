@@ -26,7 +26,7 @@ use crate::{
         ensure_parent_dir,
         parent_dir_for_sync,
     },
-    storage_engine::MemValue,
+    storage::MemValue,
 };
 
 mod format {
@@ -59,7 +59,7 @@ mod format {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SSTable {
-    pub path: PathBuf,
+    path: PathBuf,
 }
 
 struct SSTableWriter<'a, W> {
@@ -259,7 +259,7 @@ impl<'a, R: Read> SSTableReader<'a, R> {
 impl SSTable {
     const TMP_EXTENSION: &str = "sst.tmp";
 
-    pub fn open(path: &Path) -> AcorusResult<Self> {
+    pub fn at_path(path: &Path) -> AcorusResult<Self> {
         ensure_parent_dir(path)?;
 
         Ok(Self {
@@ -267,7 +267,11 @@ impl SSTable {
         })
     }
 
-    pub fn get(&self, key: &str) -> AcorusResult<Option<MemValue>> {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn load_value(&self, key: &str) -> AcorusResult<Option<MemValue>> {
         let memtable = self.load_to_memtable()?;
         Ok(memtable.get(key).cloned())
     }
@@ -453,13 +457,13 @@ mod tests {
             AcorusError,
             AcorusResult,
         },
-        storage_engine::MemValue,
+        storage::MemValue,
     };
 
     #[test]
     fn missing_file_returns_empty_memtable() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
-        let sstable = SSTable::open(paths.sstable_path.as_path())?;
+        let sstable = SSTable::at_path(paths.sstable_path.as_path())?;
 
         assert!(sstable.load_to_memtable()?.is_empty());
 
@@ -469,7 +473,7 @@ mod tests {
     #[test]
     fn write_then_load_round_trip() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
-        let sstable = SSTable::open(paths.sstable_path.as_path())?;
+        let sstable = SSTable::at_path(paths.sstable_path.as_path())?;
         let memtable = BTreeMap::from([
             ("language".to_string(), MemValue::Value("rust".to_string())),
             ("name".to_string(), MemValue::Value("acorus".to_string())),
@@ -477,7 +481,7 @@ mod tests {
 
         sstable.write_from_memtable(&memtable)?;
 
-        let loaded = SSTable::open(paths.sstable_path.as_path())?.load_to_memtable()?;
+        let loaded = SSTable::at_path(paths.sstable_path.as_path())?.load_to_memtable()?;
         assert_eq!(loaded, memtable);
 
         Ok(())
@@ -486,7 +490,7 @@ mod tests {
     #[test]
     fn preserves_tombstone_during_round_trip() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
-        let sstable = SSTable::open(paths.sstable_path.as_path())?;
+        let sstable = SSTable::at_path(paths.sstable_path.as_path())?;
         let memtable = BTreeMap::from([
             ("deleted".to_string(), MemValue::Tombstone),
             ("live".to_string(), MemValue::Value("visible".to_string())),
@@ -494,7 +498,7 @@ mod tests {
 
         sstable.write_from_memtable(&memtable)?;
 
-        let loaded = SSTable::open(paths.sstable_path.as_path())?.load_to_memtable()?;
+        let loaded = SSTable::at_path(paths.sstable_path.as_path())?.load_to_memtable()?;
         assert_eq!(loaded, memtable);
 
         Ok(())
@@ -503,7 +507,7 @@ mod tests {
     #[test]
     fn writes_entries_in_sorted_key_order() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
-        let sstable = SSTable::open(paths.sstable_path.as_path())?;
+        let sstable = SSTable::at_path(paths.sstable_path.as_path())?;
         let mut memtable = BTreeMap::new();
         memtable.insert("c".to_string(), MemValue::Value("3".to_string()));
         memtable.insert("a".to_string(), MemValue::Value("1".to_string()));
@@ -534,7 +538,7 @@ mod tests {
         let paths = TestPaths::new()?;
         fs::write(paths.sstable_path.as_path(), b"BADC\x01\0\0\0\0\0\0\0\0")?;
 
-        let err = SSTable::open(paths.sstable_path.as_path())?
+        let err = SSTable::at_path(paths.sstable_path.as_path())?
             .load_to_memtable()
             .expect_err("invalid magic should fail");
         assert!(matches!(
@@ -554,7 +558,7 @@ mod tests {
         bytes.extend_from_slice(&0u64.to_be_bytes());
         fs::write(paths.sstable_path.as_path(), bytes)?;
 
-        let err = SSTable::open(paths.sstable_path.as_path())?
+        let err = SSTable::at_path(paths.sstable_path.as_path())?
             .load_to_memtable()
             .expect_err("unsupported version should fail");
         assert!(matches!(
@@ -576,7 +580,7 @@ mod tests {
         writer.write_entry("a", &MemValue::Value("1".to_string()))?;
         writer.flush()?;
 
-        let err = SSTable::open(paths.sstable_path.as_path())?
+        let err = SSTable::at_path(paths.sstable_path.as_path())?
             .load_to_memtable()
             .expect_err("out of order keys should fail");
         assert!(matches!(
@@ -590,7 +594,7 @@ mod tests {
     #[test]
     fn rejects_trailing_bytes_after_entries() -> AcorusResult<()> {
         let paths = TestPaths::new()?;
-        let sstable = SSTable::open(paths.sstable_path.as_path())?;
+        let sstable = SSTable::at_path(paths.sstable_path.as_path())?;
         let memtable =
             BTreeMap::from([("name".to_string(), MemValue::Value("acorus".to_string()))]);
 
@@ -602,7 +606,7 @@ mod tests {
         file.write_all(b"\xff")?;
         file.flush()?;
 
-        let err = SSTable::open(paths.sstable_path.as_path())?
+        let err = SSTable::at_path(paths.sstable_path.as_path())?
             .load_to_memtable()
             .expect_err("trailing bytes should fail");
         assert!(matches!(
@@ -624,7 +628,7 @@ mod tests {
         writer.write_u8(7)?;
         writer.flush()?;
 
-        let err = SSTable::open(paths.sstable_path.as_path())?
+        let err = SSTable::at_path(paths.sstable_path.as_path())?
             .load_to_memtable()
             .expect_err("unknown value tag should fail");
         assert!(matches!(
@@ -647,7 +651,7 @@ mod tests {
         writer.write_all(b"ac")?;
         writer.flush()?;
 
-        let err = SSTable::open(paths.sstable_path.as_path())?
+        let err = SSTable::at_path(paths.sstable_path.as_path())?
             .load_to_memtable()
             .expect_err("truncated value bytes should fail");
         assert!(matches!(

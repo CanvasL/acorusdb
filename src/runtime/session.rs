@@ -115,6 +115,11 @@ mod tests {
         task::JoinHandle,
     };
 
+    use crate::storage_engine::{
+        StoragePaths,
+        StoragePolicy,
+    };
+
     use super::run;
     use crate::{
         database::Database,
@@ -208,11 +213,12 @@ mod tests {
         async fn spawn() -> AcorusResult<Self> {
             let paths = TestPaths::new()?;
             let database = Arc::new(Database::open(
-                paths.manifest_path.as_path(),
-                paths.sstable_path.as_path(),
-                paths.wal_path.as_path(),
-                usize::MAX,
-                u64::MAX,
+                StoragePaths::new(
+                    paths.manifest_path.clone(),
+                    paths.sstable_path.clone(),
+                    paths.wal_path.clone(),
+                ),
+                StoragePolicy::new(usize::MAX, u64::MAX),
             )?);
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let addr = listener.local_addr()?;
