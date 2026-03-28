@@ -62,7 +62,10 @@ impl Manifest {
             manifest.save_atomically()?;
         }
 
-        let file = File::open(path).map_err(|source| manifest_read_error(path, source))?;
+        let file = File::open(path).map_err(|source| AcorusError::ManifestRead {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let mut reader = ManifestReader::new(path, BufReader::new(file));
         let manifest_file = reader.read_manifest_file()?;
 
@@ -78,8 +81,10 @@ impl Manifest {
         ensure_parent_dir(&manifest_path)?;
         let tmp_path = manifest_path.with_extension(Self::TMP_EXTENSION);
 
-        let tmp_file =
-            File::create(&tmp_path).map_err(|source| manifest_write_error(&tmp_path, source))?;
+        let tmp_file = File::create(&tmp_path).map_err(|source| AcorusError::ManifestWrite {
+            path: tmp_path.clone(),
+            source,
+        })?;
 
         let mut writer = ManifestWriter::new(&tmp_path, BufWriter::new(tmp_file));
 
@@ -87,20 +92,33 @@ impl Manifest {
         writer.flush()?;
         drop(writer);
 
-        let file =
-            File::open(&tmp_path).map_err(|source| manifest_write_error(&tmp_path, source))?;
+        let file = File::open(&tmp_path).map_err(|source| AcorusError::ManifestWrite {
+            path: tmp_path.clone(),
+            source,
+        })?;
         file.sync_all()
-            .map_err(|source| manifest_write_error(&tmp_path, source))?;
+            .map_err(|source| AcorusError::ManifestWrite {
+                path: tmp_path.clone(),
+                source,
+            })?;
 
-        std::fs::rename(&tmp_path, &self.path)
-            .map_err(|source| manifest_write_error(&manifest_path, source))?;
+        std::fs::rename(&tmp_path, &self.path).map_err(|source| AcorusError::ManifestWrite {
+            path: manifest_path.clone(),
+            source,
+        })?;
 
         let dir = parent_dir_for_sync(&manifest_path);
         let dir_path = dir.to_path_buf();
-        let dir_file = File::open(dir).map_err(|source| manifest_write_error(&dir_path, source))?;
+        let dir_file = File::open(dir).map_err(|source| AcorusError::ManifestWrite {
+            path: dir_path.clone(),
+            source,
+        })?;
         dir_file
             .sync_all()
-            .map_err(|source| manifest_write_error(&dir_path, source))?;
+            .map_err(|source| AcorusError::ManifestWrite {
+                path: dir_path,
+                source,
+            })?;
 
         Ok(())
     }
@@ -135,7 +153,10 @@ impl<'a, R: Read> ManifestReader<'a, R> {
         let mut content = String::new();
         self.reader
             .read_to_string(&mut content)
-            .map_err(|source| manifest_read_error(self.path, source))?;
+            .map_err(|source| AcorusError::ManifestRead {
+                path: self.path.to_path_buf(),
+                source,
+            })?;
 
         toml::from_str(&content).map_err(|source| AcorusError::ManifestLoad {
             path: self.path.to_path_buf(),
@@ -166,27 +187,19 @@ impl<'a, W: Write> ManifestWriter<'a, W> {
     fn flush(&mut self) -> AcorusResult<()> {
         self.writer
             .flush()
-            .map_err(|source| manifest_write_error(self.path, source))
+            .map_err(|source| AcorusError::ManifestWrite {
+                path: self.path.to_path_buf(),
+                source,
+            })
     }
 
     fn write_all(&mut self, bytes: &[u8]) -> AcorusResult<()> {
         self.writer
             .write_all(bytes)
-            .map_err(|source| manifest_write_error(self.path, source))
-    }
-}
-
-fn manifest_write_error(path: &Path, source: std::io::Error) -> AcorusError {
-    AcorusError::ManifestWrite {
-        path: path.to_path_buf(),
-        source,
-    }
-}
-
-fn manifest_read_error(path: &Path, source: std::io::Error) -> AcorusError {
-    AcorusError::ManifestRead {
-        path: path.to_path_buf(),
-        source,
+            .map_err(|source| AcorusError::ManifestWrite {
+                path: self.path.to_path_buf(),
+                source,
+            })
     }
 }
 

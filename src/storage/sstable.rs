@@ -95,13 +95,19 @@ impl<'a, W: Write> SSTableWriter<'a, W> {
     fn flush(&mut self) -> AcorusResult<()> {
         self.writer
             .flush()
-            .map_err(|source| sstable_write_error(self.path, source))
+            .map_err(|source| AcorusError::SSTableWrite {
+                path: self.path.to_path_buf(),
+                source,
+            })
     }
 
     fn write_all(&mut self, bytes: &[u8]) -> AcorusResult<()> {
         self.writer
             .write_all(bytes)
-            .map_err(|source| sstable_write_error(self.path, source))
+            .map_err(|source| AcorusError::SSTableWrite {
+                path: self.path.to_path_buf(),
+                source,
+            })
     }
 
     fn write_u8(&mut self, value: u8) -> AcorusResult<()> {
@@ -139,24 +145,24 @@ impl<'a, R: Read> SSTableReader<'a, R> {
     fn read_header(&mut self) -> AcorusResult<u64> {
         let magic = self.read_exact_array::<4>("header.magic")?;
         if magic != format::MAGIC {
-            return Err(corrupted_sstable(
-                self.path,
-                "header.magic",
-                format!(
+            return Err(AcorusError::CorruptedSSTable {
+                path: self.path.to_path_buf(),
+                location: "header.magic".to_string(),
+                message: format!(
                     "invalid magic number: expected {:?}, got {:?}",
                     format::MAGIC,
                     magic
                 ),
-            ));
+            });
         }
 
         let version = self.read_u8("header.version")?;
         if version != format::VERSION {
-            return Err(corrupted_sstable(
-                self.path,
-                "header.version",
-                format!("unsupported sstable version: {version}"),
-            ));
+            return Err(AcorusError::CorruptedSSTable {
+                path: self.path.to_path_buf(),
+                location: "header.version".to_string(),
+                message: format!("unsupported sstable version: {version}"),
+            });
         }
 
         self.read_u64("header.entry_count")
@@ -166,25 +172,19 @@ impl<'a, R: Read> SSTableReader<'a, R> {
         let key_len = self.read_u32(&entry_location(entry_index, "key_length"))?;
         let key_bytes =
             self.read_exact_vec(&entry_location(entry_index, "key_bytes"), key_len as usize)?;
-        let key = String::from_utf8(key_bytes).map_err(|error| {
-            corrupted_sstable_entry(
-                self.path,
-                entry_index,
-                "key_bytes",
-                format!("invalid UTF-8 sequence in key: {error}"),
-            )
+        let key = String::from_utf8(key_bytes).map_err(|error| AcorusError::CorruptedSSTable {
+            path: self.path.to_path_buf(),
+            location: entry_location(entry_index, "key_bytes"),
+            message: format!("invalid UTF-8 sequence in key: {error}"),
         })?;
 
         let value_tag = self
             .read_u8(&entry_location(entry_index, "value_tag"))
             .and_then(|byte| {
-                format::ValueTag::from_byte(byte).ok_or_else(|| {
-                    corrupted_sstable_entry(
-                        self.path,
-                        entry_index,
-                        "value_tag",
-                        format!("unknown value tag: {byte}"),
-                    )
+                format::ValueTag::from_byte(byte).ok_or_else(|| AcorusError::CorruptedSSTable {
+                    path: self.path.to_path_buf(),
+                    location: entry_location(entry_index, "value_tag"),
+                    message: format!("unknown value tag: {byte}"),
                 })
             })?;
 
@@ -196,12 +196,11 @@ impl<'a, R: Read> SSTableReader<'a, R> {
                     value_len as usize,
                 )?;
                 let value = String::from_utf8(value_bytes).map_err(|error| {
-                    corrupted_sstable_entry(
-                        self.path,
-                        entry_index,
-                        "value_bytes",
-                        format!("invalid UTF-8 sequence in value: {error}"),
-                    )
+                    AcorusError::CorruptedSSTable {
+                        path: self.path.to_path_buf(),
+                        location: entry_location(entry_index, "value_bytes"),
+                        message: format!("invalid UTF-8 sequence in value: {error}"),
+                    }
                 })?;
                 MemValue::Value(value)
             }
@@ -215,12 +214,15 @@ impl<'a, R: Read> SSTableReader<'a, R> {
         let mut trailing = [0u8; 1];
         match self.reader.read(&mut trailing) {
             Ok(0) => Ok(()),
-            Ok(_) => Err(corrupted_sstable(
-                self.path,
-                "trailer",
-                "unexpected trailing bytes after final entry",
-            )),
-            Err(source) => Err(sstable_read_error(self.path, source)),
+            Ok(_) => Err(AcorusError::CorruptedSSTable {
+                path: self.path.to_path_buf(),
+                location: "trailer".to_string(),
+                message: "unexpected trailing bytes after final entry".to_string(),
+            }),
+            Err(source) => Err(AcorusError::SSTableRead {
+                path: self.path.to_path_buf(),
+                source,
+            }),
         }
     }
 
@@ -281,8 +283,10 @@ impl SSTable {
                 message: "too many entries to encode into a single sstable".to_string(),
             })?;
 
-        let tmp_file =
-            File::create(&tmp_path).map_err(|source| sstable_write_error(&tmp_path, source))?;
+        let tmp_file = File::create(&tmp_path).map_err(|source| AcorusError::SSTableWrite {
+            path: tmp_path.clone(),
+            source,
+        })?;
         let mut writer = SSTableWriter::new(&tmp_path, BufWriter::new(tmp_file));
 
         writer.write_header(entry_count)?;
@@ -295,22 +299,35 @@ impl SSTable {
         drop(writer);
 
         // Make the temp file contents durable before publishing it.
-        let file =
-            File::open(&tmp_path).map_err(|source| sstable_write_error(&tmp_path, source))?;
+        let file = File::open(&tmp_path).map_err(|source| AcorusError::SSTableWrite {
+            path: tmp_path.clone(),
+            source,
+        })?;
         file.sync_all()
-            .map_err(|source| sstable_write_error(&tmp_path, source))?;
+            .map_err(|source| AcorusError::SSTableWrite {
+                path: tmp_path.clone(),
+                source,
+            })?;
 
         // Publish the new table atomically.
-        std::fs::rename(&tmp_path, &sst_path)
-            .map_err(|source| sstable_write_error(&sst_path, source))?;
+        std::fs::rename(&tmp_path, &sst_path).map_err(|source| AcorusError::SSTableWrite {
+            path: sst_path.clone(),
+            source,
+        })?;
 
         // Sync the parent directory so the rename itself is durable.
         let dir = parent_dir_for_sync(&sst_path);
         let dir_path = dir.to_path_buf();
-        let dir_file = File::open(dir).map_err(|source| sstable_write_error(&dir_path, source))?;
+        let dir_file = File::open(dir).map_err(|source| AcorusError::SSTableWrite {
+            path: dir_path.clone(),
+            source,
+        })?;
         dir_file
             .sync_all()
-            .map_err(|source| sstable_write_error(&dir_path, source))?;
+            .map_err(|source| AcorusError::SSTableWrite {
+                path: dir_path,
+                source,
+            })?;
 
         Ok(())
     }
@@ -333,8 +350,10 @@ impl SSTable {
         }
 
         // Decode the SSTable file into an ordered in-memory map.
-        let reader =
-            File::open(&sst_path).map_err(|source| sstable_read_error(&sst_path, source))?;
+        let reader = File::open(&sst_path).map_err(|source| AcorusError::SSTableRead {
+            path: sst_path.clone(),
+            source,
+        })?;
         let mut reader = SSTableReader::new(&sst_path, BufReader::new(reader));
 
         let entry_count = reader.read_header()?;
@@ -347,14 +366,13 @@ impl SSTable {
             if let Some(previous_key) = &last_key
                 && key <= *previous_key
             {
-                return Err(corrupted_sstable_entry(
-                    &sst_path,
-                    entry_index,
-                    "key",
-                    format!(
+                return Err(AcorusError::CorruptedSSTable {
+                    path: sst_path.clone(),
+                    location: entry_location(entry_index, "key"),
+                    message: format!(
                         "expected strictly increasing keys, got {key:?} after {previous_key:?}"
                     ),
-                ));
+                });
             }
 
             last_key = Some(key.clone());
@@ -367,55 +385,23 @@ impl SSTable {
     }
 }
 
-fn sstable_write_error(path: &Path, source: io::Error) -> AcorusError {
-    AcorusError::SSTableWrite {
-        path: path.to_path_buf(),
-        source,
-    }
-}
-
-fn sstable_read_error(path: &Path, source: io::Error) -> AcorusError {
-    AcorusError::SSTableRead {
-        path: path.to_path_buf(),
-        source,
-    }
-}
-
-fn corrupted_sstable(
-    path: &Path,
-    location: impl Into<String>,
-    message: impl Into<String>,
-) -> AcorusError {
-    AcorusError::CorruptedSSTable {
-        path: path.to_path_buf(),
-        location: location.into(),
-        message: message.into(),
-    }
-}
-
-fn corrupted_sstable_entry(
-    path: &Path,
-    entry_index: u64,
-    field: &'static str,
-    message: impl Into<String>,
-) -> AcorusError {
-    corrupted_sstable(path, entry_location(entry_index, field), message)
-}
-
 fn entry_location(entry_index: u64, field: &'static str) -> String {
     format!("entry {entry_index}.{field}")
 }
 
 fn map_sstable_read_step_error(path: &Path, context: &str, source: io::Error) -> AcorusError {
     if source.kind() == io::ErrorKind::UnexpectedEof {
-        return corrupted_sstable(
-            path,
-            context,
-            format!("truncated sstable while reading {context}"),
-        );
+        return AcorusError::CorruptedSSTable {
+            path: path.to_path_buf(),
+            location: context.to_string(),
+            message: format!("truncated sstable while reading {context}"),
+        };
     }
 
-    sstable_read_error(path, source)
+    AcorusError::SSTableRead {
+        path: path.to_path_buf(),
+        source,
+    }
 }
 
 #[cfg(test)]

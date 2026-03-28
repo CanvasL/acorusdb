@@ -56,10 +56,13 @@ impl<'a, R: BufRead> WalReader<'a, R> {
 
         loop {
             line.clear();
-            let bytes_read = self
-                .reader
-                .read_line(&mut line)
-                .map_err(|source| wal_read_error(self.path, source))?;
+            let bytes_read =
+                self.reader
+                    .read_line(&mut line)
+                    .map_err(|source| AcorusError::WalRead {
+                        path: self.path.to_path_buf(),
+                        source,
+                    })?;
             if bytes_read == 0 {
                 break;
             }
@@ -81,11 +84,11 @@ impl<'a, R: BufRead> WalReader<'a, R> {
                     break;
                 }
                 Err(error) => {
-                    return Err(corrupted_wal(
-                        self.path,
-                        format!("line {}.{}", self.line_num, error.field),
-                        error.message,
-                    ));
+                    return Err(AcorusError::CorruptedWal {
+                        path: self.path.to_path_buf(),
+                        location: format!("line {}.{}", self.line_num, error.field),
+                        message: error.message,
+                    });
                 }
             }
         }
@@ -120,19 +123,26 @@ impl<'a, 'b> WalWriter<'a, 'b> {
     fn write_all(&mut self, bytes: &[u8]) -> AcorusResult<()> {
         self.file
             .write_all(bytes)
-            .map_err(|source| wal_write_error(self.path, source))
+            .map_err(|source| AcorusError::WalWrite {
+                path: self.path.to_path_buf(),
+                source,
+            })
     }
 
     fn flush(&mut self) -> AcorusResult<()> {
-        self.file
-            .flush()
-            .map_err(|source| wal_write_error(self.path, source))
+        self.file.flush().map_err(|source| AcorusError::WalWrite {
+            path: self.path.to_path_buf(),
+            source,
+        })
     }
 
     fn sync_all(&mut self) -> AcorusResult<()> {
         self.file
             .sync_all()
-            .map_err(|source| wal_write_error(self.path, source))
+            .map_err(|source| AcorusError::WalWrite {
+                path: self.path.to_path_buf(),
+                source,
+            })
     }
 }
 
@@ -408,32 +418,6 @@ fn decode_field(field: &str) -> Result<String, String> {
 fn trim_line_ending(line: &str) -> &str {
     let line = line.strip_suffix('\n').unwrap_or(line);
     line.strip_suffix('\r').unwrap_or(line)
-}
-
-fn wal_read_error(path: &Path, source: std::io::Error) -> AcorusError {
-    AcorusError::WalRead {
-        path: path.to_path_buf(),
-        source,
-    }
-}
-
-fn wal_write_error(path: &Path, source: std::io::Error) -> AcorusError {
-    AcorusError::WalWrite {
-        path: path.to_path_buf(),
-        source,
-    }
-}
-
-fn corrupted_wal(
-    path: &Path,
-    location: impl Into<String>,
-    message: impl Into<String>,
-) -> AcorusError {
-    AcorusError::CorruptedWal {
-        path: path.to_path_buf(),
-        location: location.into(),
-        message: message.into(),
-    }
 }
 
 #[cfg(test)]
