@@ -26,6 +26,7 @@ impl Database {
         sstable_base_path: &Path,
         wal_path: &Path,
         flush_threshold_entries: usize,
+        compact_threshold_bytes: u64,
     ) -> AcorusResult<Self> {
         Ok(Self {
             storage_engine: Mutex::new(StorageEngine::open(
@@ -33,6 +34,7 @@ impl Database {
                 sstable_base_path,
                 wal_path,
                 flush_threshold_entries,
+                compact_threshold_bytes,
             )?),
         })
     }

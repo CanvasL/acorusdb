@@ -57,8 +57,9 @@ mod format {
     pub(super) const VERSION: u8 = 1;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SSTable {
-    path: PathBuf,
+    pub path: PathBuf,
 }
 
 struct SSTableWriter<'a, W> {
@@ -269,6 +270,15 @@ impl SSTable {
     pub fn get(&self, key: &str) -> AcorusResult<Option<MemValue>> {
         let memtable = self.load_to_memtable()?;
         Ok(memtable.get(key).cloned())
+    }
+
+    pub fn size_bytes(&self) -> AcorusResult<u64> {
+        fs::metadata(&self.path)
+            .map(|metadata| metadata.len())
+            .map_err(|source| AcorusError::SSTableRead {
+                path: self.path.clone(),
+                source,
+            })
     }
 
     pub fn write_from_memtable(&self, memtable: &BTreeMap<String, MemValue>) -> AcorusResult<()> {

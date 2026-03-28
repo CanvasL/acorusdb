@@ -112,6 +112,7 @@ pub struct StorageEngine {
     memtable: BTreeMap<String, MemValue>,
     sstables: Vec<SSTable>,
     flush_threshold_entries: usize,
+    compact_threshold_bytes: u64,
     wal: Wal,
     manifest: Manifest,
 }
@@ -124,6 +125,7 @@ impl StorageEngine {
         sstable_base_path: &Path,
         wal_path: &Path,
         flush_threshold_entries: usize,
+        compact_threshold_bytes: u64,
     ) -> AcorusResult<Self> {
         let manifest = Manifest::load(manifest_path)?;
 
@@ -139,6 +141,7 @@ impl StorageEngine {
             memtable: BTreeMap::new(),
             sstables,
             flush_threshold_entries,
+            compact_threshold_bytes,
             wal,
             manifest,
         };
@@ -190,6 +193,43 @@ impl StorageEngine {
         Ok(true)
     }
 
+    pub fn compact(&mut self) -> AcorusResult<()> {
+        if self.sstables.is_empty() {
+            self.flush()?;
+        }
+
+        if self.sstables.len() <= 1 {
+            return Ok(());
+        }
+
+        let mut merged_memtable = BTreeMap::<String, MemValue>::new();
+        let mut sstables_from_old_to_new = self.sstables.clone();
+        sstables_from_old_to_new.reverse();
+        for sstable in &sstables_from_old_to_new {
+            let mt = sstable.load_to_memtable()?;
+            for (key, value) in mt {
+                merged_memtable.insert(key, value);
+            }
+        }
+
+        let merged_sstable = SSTable::open(&self.next_sstable_path())?;
+        merged_sstable.write_from_memtable(&merged_memtable)?;
+        self.next_sstable_id += 1;
+
+        self.sstables.clear();
+        self.sstables.push(merged_sstable.clone());
+
+        self.manifest.current_sstables.clear();
+        self.manifest
+            .current_sstables
+            .push(merged_sstable.path.to_string_lossy().to_string());
+        self.manifest.save_atomically()?;
+
+        remove_sstables(&sstables_from_old_to_new)?;
+
+        Ok(())
+    }
+
     /// Flushes the active memtable into a new immutable SSTable and then clears the WAL.
     fn flush(&mut self) -> AcorusResult<()> {
         if self.memtable.is_empty() {
@@ -216,11 +256,44 @@ impl StorageEngine {
     }
 
     fn maybe_flush(&mut self) {
-        if self.memtable.len() >= self.flush_threshold_entries
-            && let Err(err) = self.flush()
-        {
-            tracing::error!(error = %err, "failed to flush memtable");
+        if self.memtable.len() < self.flush_threshold_entries {
+            return;
         }
+
+        match self.flush() {
+            Ok(()) => self.maybe_compact(),
+            Err(err) => tracing::error!(error = %err, "failed to flush memtable"),
+        }
+    }
+
+    fn maybe_compact(&mut self) {
+        match self.should_compact() {
+            Ok(true) => {
+                if let Err(err) = self.compact() {
+                    tracing::error!(error = %err, "failed to compact sstables");
+                }
+            }
+            Ok(false) => {}
+            Err(err) => tracing::error!(
+                error = %err,
+                "failed to inspect sstable size before compaction"
+            ),
+        }
+    }
+
+    // Full merge compaction is triggered by the total size of all currently active SSTables.
+    fn should_compact(&self) -> AcorusResult<bool> {
+        if self.sstables.len() <= 1 {
+            return Ok(false);
+        }
+
+        Ok(self.active_sstable_size_bytes()? >= self.compact_threshold_bytes)
+    }
+
+    fn active_sstable_size_bytes(&self) -> AcorusResult<u64> {
+        self.sstables.iter().try_fold(0_u64, |total, sstable| {
+            Ok(total.saturating_add(sstable.size_bytes()?))
+        })
     }
 
     fn contains_visible_key(&self, key: &str) -> AcorusResult<bool> {
@@ -294,6 +367,16 @@ fn load_sstables(
     let next_sstable_id = max_id.saturating_add(1).max(1);
 
     Ok((layout, sstables, next_sstable_id))
+}
+
+fn remove_sstables(sstables: &[SSTable]) -> AcorusResult<()> {
+    for sstable in sstables {
+        fs::remove_file(&sstable.path).map_err(|source| AcorusError::SSTableRemove {
+            path: sstable.path.clone(),
+            source,
+        })?;
+    }
+    Ok(())
 }
 
 fn invalid_sstable_filename(path: &Path, message: impl Into<String>) -> AcorusError {
@@ -451,6 +534,24 @@ mod tests {
 
         let engine = open_engine(&paths, usize::MAX)?;
         assert_eq!(engine.get("color")?, Some("blue".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn auto_compacts_after_flush_when_total_sstable_size_reaches_threshold() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine_with_compaction(&paths, 0, 0)?;
+            engine.set("name", "fan")?;
+            engine.set("name", "acorus")?;
+        }
+
+        assert_eq!(paths.sstable_files()?.len(), 1);
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("name")?, Some("acorus".to_string()));
 
         Ok(())
     }
@@ -661,11 +762,20 @@ mod tests {
         paths: &TestPaths,
         flush_threshold_entries: usize,
     ) -> AcorusResult<StorageEngine> {
+        open_engine_with_compaction(paths, flush_threshold_entries, u64::MAX)
+    }
+
+    fn open_engine_with_compaction(
+        paths: &TestPaths,
+        flush_threshold_entries: usize,
+        compact_threshold_bytes: u64,
+    ) -> AcorusResult<StorageEngine> {
         StorageEngine::open(
             paths.manifest_path.as_path(),
             paths.sstable_base_path.as_path(),
             paths.wal_path.as_path(),
             flush_threshold_entries,
+            compact_threshold_bytes,
         )
     }
 

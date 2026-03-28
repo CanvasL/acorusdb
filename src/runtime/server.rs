@@ -38,6 +38,7 @@ pub async fn run(config: Config) -> AcorusResult<()> {
         sstable_base_path.as_path(),
         wal_path.as_path(),
         config.wal.flush_threshold_entries,
+        config.sstable.compact_threshold_bytes,
     )?);
 
     let (shutdown_tx, _) = broadcast::channel(1);

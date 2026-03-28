@@ -290,10 +290,6 @@ impl Wal {
 
         Ok(())
     }
-
-    pub fn should_compact(&self, threshold: usize) -> bool {
-        self.size_bytes > threshold
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -87,6 +87,13 @@ pub enum AcorusError {
         source: io::Error,
     },
 
+    #[error("failed to remove sstable {path}: {source}", path = .path.display())]
+    SSTableRemove {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
     #[error("corrupted sstable {path} at {location}: {message}", path = .path.display())]
     CorruptedSSTable {
         path: PathBuf,

@@ -11,8 +11,10 @@
 - 文本行协议
 - 内存 KV 存储
 - WAL 持久化
+- manifest 元数据管理
 - 多 SSTable 恢复
 - memtable flush
+- SSTable merge compaction
 - tracing 日志
 - 配置文件加载
 - 优雅停机
@@ -32,8 +34,9 @@
   - `QUIT`
 - 支持 `value` 中包含空格。
 - `key` 当前不允许包含空白字符。
-- 启动时会扫描 `sstable.dir` 下属于 `sstable.prefix` 的所有表文件，再回放 WAL。
+- 启动时会先加载 manifest 中记录的 SSTable 列表，再回放 WAL。
 - active memtable 达到阈值后会触发 flush。
+- 活跃 SSTable 总大小达到阈值后，会在下一次成功 flush 后触发 full merge compaction。
 - 收到 `Ctrl+C` 或 `SIGTERM` 后会停止接收新连接，并通知现有连接退出。
 
 ## 项目结构
@@ -42,25 +45,27 @@
   - 库入口，导出核心模块。
 - `src/main.rs`
   - 二进制入口，只负责 CLI、配置加载、tracing 初始化和启动 server。
-- `src/server.rs`
+- `src/runtime/server.rs`
   - 监听 TCP、接收连接、协调 shutdown。
-- `src/session.rs`
+- `src/runtime/session.rs`
   - 单连接读写循环。
-- `src/protocol.rs`
-  - 文本协议解析和响应输出。
-- `src/database.rs`
+- `src/protocol/`
+  - 文本协议命令、解析和响应输出。
+- `src/runtime/database.rs`
   - 命令执行入口。
-- `src/storage_engine.rs`
-  - active memtable、多 SSTable、WAL 和 flush 的协调层。
-- `src/wal.rs`
+- `src/storage/storage_engine.rs`
+  - active memtable、多 SSTable、manifest、WAL、flush 和 compaction 的协调层。
+- `src/storage/wal.rs`
   - WAL 读写、恢复和 reset。
-- `src/sstable.rs`
+- `src/storage/sstable.rs`
   - 单张 SSTable 文件的保存、加载和点查。
-- `src/config.rs`
-  - TOML 配置读取。
-- `src/error.rs`
+- `src/storage/manifest.rs`
+  - manifest 原子读写和表列表管理。
+- `src/config/`
+  - TOML 配置读取和默认值处理。
+- `src/support/error.rs`
   - 统一内部错误类型。
-- `src/shutdown.rs`
+- `src/runtime/shutdown.rs`
   - 停机信号处理。
 
 ## 运行方式
@@ -105,6 +110,7 @@ level = "info"
 [sstable]
 dir = "data/sstables"
 prefix = "acorusdb"
+compact_threshold_bytes = 4194304
 
 [wal]
 dir = "data/wal"
@@ -124,6 +130,8 @@ flush_threshold_entries = 1024
   - SSTable 文件前缀。当前会自动派生出：
     - `<sstable.dir>/<sstable.prefix>-000001.sst`
     - `<sstable.dir>/<sstable.prefix>-000002.sst`
+- `sstable.compact_threshold_bytes`
+  - 当前活跃 SSTable 的总文件大小达到阈值后，会在下一次成功 flush 之后触发 full merge compaction。
 - `wal.dir`
   - WAL 目录。
 - `wal.prefix`
@@ -203,17 +211,57 @@ client command
 当前恢复路径大致是：
 
 ```text
-scan matching sstables in directory
-  -> build read path from newest to oldest
+load manifest
+  -> open referenced sstables from newest to oldest
   -> replay WAL into active memtable
 ```
+
+### Flush 与 Compaction 设计
+
+当前持久化路径分成两层阈值：
+
+1. `wal.flush_threshold_entries`
+   - 控制 active memtable 里累计多少条 entry 之后触发 flush。
+2. `sstable.compact_threshold_bytes`
+   - 控制当前活跃 SSTable 集合的总文件大小达到多少字节之后触发 compaction。
+
+flush 的实际顺序是：
+
+```text
+active memtable reaches flush threshold
+  -> write new numbered SSTable
+  -> sync SSTable file
+  -> update manifest atomically
+  -> reset WAL and sync it
+  -> clear active memtable
+```
+
+compact 的实际顺序是：
+
+```text
+successful flush
+  -> sum sizes of all active SSTables
+  -> if total size >= compact_threshold_bytes:
+       merge old SSTables into one new SSTable
+       update manifest atomically to point to the merged table
+       remove old SSTable files
+```
+
+这样设计的原因是：
+
+- compact 判断基于已经落盘的 SSTable 文件，而不是基于 memtable。
+- 只有 flush 成功后，最新写入才真正进入 SSTable 集合，compaction 输入才完整。
+- manifest 先原子切换到新表，再删除旧表，恢复路径不会因为中途崩溃而引用到一组不一致的表文件。
 
 当前实现特点：
 
 - WAL 每次写入后会 `flush + sync_all`
 - SSTable 写出会走临时文件、rename 和目录同步
+- manifest 会通过临时文件、rename 和目录同步原子更新
 - flush 会写出新的编号 SSTable，并清空 WAL
-- 启动时会按新到旧顺序加载当前目录下属于这套数据的所有 SSTable
+- 启动时只会加载 manifest 中记录的 SSTable，并按新到旧顺序建立读路径
+- 当前 compaction 是 full merge compaction，不是 leveled compaction
+- 当前 auto-compaction 由活跃 SSTable 总大小驱动，不是后台线程持续调度
 - WAL reset 也做了同步处理
 - WAL 最后一行损坏会被视作可能的 torn write 并忽略
 - WAL 中间行损坏会作为错误上报
@@ -265,7 +313,7 @@ scan matching sstables in directory
 当前规则如下：
 
 1. tombstone 表示“这个 key 被逻辑删除”，而不是“系统里从未出现过这个 key”。
-2. 在 [`src/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage_engine.rs) 中，内存表 `memtable` 使用 `MemValue::Tombstone` 表示删除状态。
+2. 在 [`src/storage/storage_engine.rs`](/Users/fan/MyProjects/acorusdb/src/storage/storage_engine.rs) 中，内存表 `memtable` 使用 `MemValue::Tombstone` 表示删除状态。
 3. `GET` 遇到 tombstone 时返回不存在，也就是协议层的 `(nil)`。
 4. `EXISTS` 遇到 tombstone 时返回 `false`，也就是协议层的 `0`。
 5. 对已经是 tombstone 的 key 再执行一次 `DEL`，返回 `false`。
@@ -273,7 +321,7 @@ scan matching sstables in directory
 7. WAL 中的 `Delete` 在恢复时会重建成 tombstone，而不是直接把 key 从内存表里移除。
 8. 当前 SSTable 也会持久化 tombstone，保证 flush 和重启后删除语义不丢失。
 9. 当前 flush 不会主动清理 tombstone，它只是把当前 `memtable` 状态落盘并清空 WAL。
-10. 未来进入 SSTable / LSM 阶段后，tombstone 会继续承担“遮蔽旧层旧值”的职责，并在合适的 compaction 时机清理。
+10. 当前 compaction 仍然会保留 tombstone，保证删除语义不退化；后续可以在更严格的安全条件下再清理“已经不再需要遮蔽旧值”的 tombstone。
 
 ## 错误处理
 
@@ -284,7 +332,8 @@ scan matching sstables in directory
 - shutdown 信号安装失败
 - WAL 打开、读取、写入、reset 失败
 - WAL 损坏
-- SSTable 编码、写入、读取、解码失败
+- SSTable 编码、写入、读取、删除、解码失败
+- manifest 读取、解析、写入失败
 
 协议错误单独保留在 `protocol` 层，不和内部运行时错误混在一起。
 
@@ -320,8 +369,10 @@ cargo test
 - `SET -> DEL -> SET` 之后的 key 复活语义
 - flush 后恢复
 - flush 后 tombstone 保留
+- auto-compaction 阈值触发与最新值保留
 - `sstable + wal` 叠加恢复
 - 多 SSTable 启动恢复和覆盖顺序
+- manifest 驱动恢复、orphan SSTable 忽略和损坏 manifest 报错
 - SSTable 直接读写、排序、tombstone 保留和损坏定位
 - 重启后和 flush 后的 key 顺序稳定性
 - WAL 损坏边界和字段定位
@@ -332,10 +383,12 @@ cargo test
 
 - 还不是 RESP 协议
 - 还不是 Redis 客户端兼容实现
-- 当前 SSTable 还没有 manifest、index、checksum 和 block 结构
+- 当前 SSTable 还没有 sparse index、checksum 和 block 结构
 - 当前单表点查还是朴素实现，会直接加载整张表
-- 当前存储结构还不是 LSM Tree
-- 还没有 manifest、Bloom filter、后台 compaction 和 merge compaction 等能力
+- 当前 compaction 还是 full merge compaction，还没有 leveled 策略
+- 当前 compaction 还没有清理无效 tombstone
+- 当前还没有后台 compaction、Bloom filter 和 benchmark
+- 当前存储结构还不是完整的 LSM Tree
 
 ## 下一步方向
 
@@ -343,6 +396,6 @@ cargo test
 
 核心方向是把当前存储引擎逐步演进成一个 mini-LSM：
 
-- 先补 manifest，把当前多 SSTable 集合管理起来
-- 然后引入 merge compaction
-- 最后再逐步补索引和读放大优化
+- 先把当前 full merge compaction 补齐 tombstone 清理和测试覆盖
+- 然后给 SSTable 增加 sparse index，降低点查的整表读取成本
+- 最后再逐步补 Bloom filter、benchmark 和更进一步的 compaction 策略

@@ -51,6 +51,7 @@ mod tests {
         let config = Config::default();
 
         assert_eq!(config.sstable.base_path(), Path::new("data/acorusdb.sst"));
+        assert_eq!(config.sstable.compact_threshold_bytes, 4 * 1024 * 1024);
         assert_eq!(config.wal.path(), Path::new("data/acorusdb.wal"));
         assert_eq!(config.wal.flush_threshold_entries, 1024);
     }
@@ -62,6 +63,7 @@ mod tests {
 [sstable]
 dir = "db/sst"
 prefix = "main"
+compact_threshold_bytes = 2048
 
 [wal]
 dir = "db/wal"
@@ -73,6 +75,7 @@ flush_threshold_entries = 64
         .expect("config should parse");
 
         assert_eq!(config.sstable.base_path(), Path::new("db/sst/main.sst"));
+        assert_eq!(config.sstable.compact_threshold_bytes, 2048);
         assert_eq!(config.wal.path(), Path::new("db/wal/main-log.wal"));
         assert_eq!(config.wal.flush_threshold_entries, 64);
     }
@@ -93,6 +96,7 @@ flush_threshold_entries = 32
         .expect("shared storage config should parse");
 
         assert_eq!(config.sstable.base_path(), Path::new("db/shared.sst"));
+        assert_eq!(config.sstable.compact_threshold_bytes, 4 * 1024 * 1024);
         assert_eq!(config.wal.path(), Path::new("db/shared.wal"));
         assert_eq!(config.wal.flush_threshold_entries, 32);
     }
@@ -103,6 +107,7 @@ flush_threshold_entries = 32
             r#"
 [sstable]
 path = "data/sstable/acorusdb.sst"
+compact_threshold_bytes = 4096
 
 [wal]
 path = "data/wal/acorusdb.wal"
@@ -114,6 +119,7 @@ flush_threshold_entries = 16
 
         assert_eq!(config.sstable.dir, Path::new("data/sstable"));
         assert_eq!(config.sstable.prefix, "acorusdb");
+        assert_eq!(config.sstable.compact_threshold_bytes, 4096);
         assert_eq!(config.wal.dir, Path::new("data/wal"));
         assert_eq!(config.wal.prefix, "acorusdb");
         assert_eq!(config.wal.flush_threshold_entries, 16);

@@ -212,6 +212,7 @@ mod tests {
                 paths.sstable_path.as_path(),
                 paths.wal_path.as_path(),
                 usize::MAX,
+                u64::MAX,
             )?);
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let addr = listener.local_addr()?;

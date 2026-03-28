@@ -36,12 +36,24 @@ struct RawManifestConfig {
     prefix: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 struct RawSSTableConfig {
     dir: Option<PathBuf>,
     prefix: Option<String>,
     path: Option<PathBuf>,
+    compact_threshold_bytes: u64,
+}
+
+impl Default for RawSSTableConfig {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            prefix: None,
+            path: None,
+            compact_threshold_bytes: SSTableConfig::default().compact_threshold_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -120,6 +132,7 @@ fn build_sstable_config(
             .or_else(|| shared.and_then(|storage| storage.prefix.clone()))
             .or_else(|| legacy.as_ref().map(|config| config.prefix.clone()))
             .unwrap_or(defaults.prefix),
+        compact_threshold_bytes: raw.compact_threshold_bytes,
     }
 }
 

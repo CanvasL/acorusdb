@@ -52,14 +52,15 @@
 
 ## 第五阶段：Compaction V1
 
-- [ ] 用 SSTable merge compaction 替代现在“多 SSTable + flush 但不做 merge”的思路。
-- [ ] 第一版只做手动触发或阈值触发，不做后台线程调度。
-- [ ] 支持把新旧 SSTable merge 成一个新表。
-- [ ] 在安全条件下丢弃旧值和无效 tombstone。
+- [x] 用 SSTable merge compaction 替代现在“多 SSTable + flush 但不做 merge”的思路。
+- [x] 第一版只做手动触发或阈值触发，不做后台线程调度。
+- [x] 支持把新旧 SSTable merge 成一个新表。
+- [x] 在 merge 结果里只保留每个 key 的最新版本。
+- [ ] 在安全条件下清理无效 tombstone。
 - [ ] 补测试覆盖：
-  - [ ] 多表里重复 key 的覆盖关系
-  - [ ] tombstone 重启后仍然生效
-  - [ ] compact 后只保留最新值
+  - [x] 多表里重复 key 的覆盖关系
+  - [ ] tombstone compact 后重启仍然生效
+  - [x] compact 后只保留最新值
 
 ## 第六阶段：元数据与恢复
 
@@ -90,4 +91,6 @@
 
 ## 建议的下一步
 
-- [ ] 开始第5阶段：先做手动触发的 SSTable merge compaction。
+- [ ] 补 compact 后 tombstone 仍然生效的测试。
+- [ ] 在确认不会影响可见性的前提下，清理无效 tombstone。
+- [ ] 给 SSTable 增加 sparse index，降低点查时整表加载的成本。

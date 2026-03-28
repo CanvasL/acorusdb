@@ -56,6 +56,10 @@ pub struct Manifest {
 impl Manifest {
     const TMP_EXTENSION: &str = "tmp";
 
+    pub fn new(path: &Path) -> Self {
+        Self::from_file(path, ManifestFile::new())
+    }
+
     pub fn load(path: &Path) -> AcorusResult<Self> {
         if !path.exists() {
             let manifest = Self::new(path);
@@ -70,10 +74,6 @@ impl Manifest {
         let manifest_file = reader.read_manifest_file()?;
 
         Ok(Self::from_file(path, manifest_file))
-    }
-
-    pub fn new(path: &Path) -> Self {
-        Self::from_file(path, ManifestFile::new())
     }
 
     pub fn save_atomically(&self) -> AcorusResult<()> {

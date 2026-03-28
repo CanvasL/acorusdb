@@ -67,6 +67,7 @@ impl ManifestConfig {
 pub struct SSTableConfig {
     pub dir: PathBuf,
     pub prefix: String,
+    pub compact_threshold_bytes: u64,
 }
 
 impl Default for SSTableConfig {
@@ -74,6 +75,7 @@ impl Default for SSTableConfig {
         Self {
             dir: PathBuf::from("data"),
             prefix: "acorusdb".to_string(),
+            compact_threshold_bytes: 4 * 1024 * 1024,
         }
     }
 }
@@ -88,6 +90,7 @@ impl SSTableConfig {
         Some(Self {
             dir: config_parent_dir(path),
             prefix,
+            compact_threshold_bytes: Self::default().compact_threshold_bytes,
         })
     }
 }
