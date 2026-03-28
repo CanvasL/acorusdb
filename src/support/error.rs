@@ -115,6 +115,16 @@ pub enum AcorusError {
         source: toml::de::Error,
     },
 
+    #[error(
+        "unsupported manifest version in {path}: expected {expected}, got {found}",
+        path = .path.display()
+    )]
+    ManifestVersion {
+        path: PathBuf,
+        expected: u64,
+        found: u64,
+    },
+
     #[error("failed to parse manifest file {path}: {source}", path = .path.display())]
     ManifestParse {
         path: PathBuf,

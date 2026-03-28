@@ -61,6 +61,10 @@ impl SSTableLayout {
             .join(format!("{}-{id:06}.sst", self.numbered_prefix))
     }
 
+    fn path_for_manifest_file(&self, file_name: &str) -> PathBuf {
+        self.dir.join(file_name)
+    }
+
     fn parse_table_id(&self, path: &Path) -> AcorusResult<Option<u64>> {
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
             return Ok(None);
@@ -175,7 +179,7 @@ impl StorageEngine {
         let manifest = Manifest::load_or_create(paths.manifest_path())?;
 
         let (sstable_layout, sstables, next_sstable_id) =
-            load_sstables(paths.sstable_base_path(), manifest.current_sstables())?;
+            load_sstables(paths.sstable_base_path(), manifest.current_table_files())?;
 
         let mut wal = Wal::open_or_create(paths.wal_path())?;
         let entries = wal.read_entries()?;
@@ -380,21 +384,18 @@ impl StorageEngine {
 
 fn load_sstables(
     base_path: &Path,
-    manifest_paths: &[String],
+    manifest_table_files: &[String],
 ) -> AcorusResult<(SSTableLayout, Vec<SSTable>, u64)> {
     let layout = SSTableLayout::from_base_path(base_path)?;
     let mut files = Vec::new();
     let mut max_id = 0_u64;
 
-    for raw_path in manifest_paths {
-        let path = PathBuf::from(raw_path);
+    for file_name in manifest_table_files {
+        let path = layout.path_for_manifest_file(file_name);
         let id = layout.parse_table_id(&path)?.ok_or_else(|| {
             invalid_sstable_filename(
                 &path,
-                format!(
-                    "manifest referenced unexpected sstable path {}",
-                    path.display()
-                ),
+                format!("manifest referenced unexpected sstable file {}", file_name),
             )
         })?;
 
@@ -752,8 +753,11 @@ mod tests {
         fs::write(
             &paths.manifest_path,
             format!(
-                "version = 1\ncurrent_sstables = [\"{}\"]\n",
-                invalid_path.display()
+                "version = 1\ncurrent_table_files = [\"{}\"]\n",
+                invalid_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("invalid test filename")
             ),
         )?;
 
@@ -915,10 +919,10 @@ mod tests {
 
         fn write_manifest<'a>(
             &self,
-            current_sstables: impl IntoIterator<Item = &'a Path>,
+            current_table_paths: impl IntoIterator<Item = &'a Path>,
         ) -> AcorusResult<()> {
             let mut manifest = Manifest::new(&self.manifest_path);
-            manifest.replace_tables(current_sstables);
+            manifest.replace_tables(current_table_paths);
             manifest.save_atomically()
         }
 

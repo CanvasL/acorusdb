@@ -32,7 +32,8 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ManifestFile {
     version: u64,
-    current_sstables: Vec<String>,
+    #[serde(default, alias = "current_sstables")]
+    current_table_files: Vec<String>,
 }
 
 impl ManifestFile {
@@ -41,7 +42,7 @@ impl ManifestFile {
     fn new() -> Self {
         Self {
             version: Self::CURRENT_VERSION,
-            current_sstables: Vec::new(),
+            current_table_files: Vec::new(),
         }
     }
 }
@@ -50,7 +51,7 @@ impl ManifestFile {
 pub struct Manifest {
     path: PathBuf,
     version: u64,
-    current_sstables: Vec<String>,
+    current_table_files: Vec<String>,
 }
 
 impl Manifest {
@@ -84,20 +85,16 @@ impl Manifest {
         self.version
     }
 
-    pub fn current_sstables(&self) -> &[String] {
-        &self.current_sstables
+    pub fn current_table_files(&self) -> &[String] {
+        &self.current_table_files
     }
 
     pub fn append_table(&mut self, path: &Path) {
-        self.current_sstables
-            .push(path.to_string_lossy().to_string());
+        self.current_table_files.push(table_file_name(path));
     }
 
     pub fn replace_tables<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) {
-        self.current_sstables = paths
-            .into_iter()
-            .map(|path| path.to_string_lossy().to_string())
-            .collect();
+        self.current_table_files = paths.into_iter().map(table_file_name).collect();
     }
 
     pub fn save_atomically(&self) -> AcorusResult<()> {
@@ -151,14 +148,18 @@ impl Manifest {
         Self {
             path: path.to_path_buf(),
             version: file.version,
-            current_sstables: file.current_sstables,
+            current_table_files: file
+                .current_table_files
+                .into_iter()
+                .map(|raw| normalize_manifest_table_file(&raw))
+                .collect(),
         }
     }
 
     fn to_file(&self) -> ManifestFile {
         ManifestFile {
             version: self.version,
-            current_sstables: self.current_sstables.clone(),
+            current_table_files: self.current_table_files.clone(),
         }
     }
 }
@@ -182,10 +183,21 @@ impl<'a, R: Read> ManifestReader<'a, R> {
                 source,
             })?;
 
-        toml::from_str(&content).map_err(|source| AcorusError::ManifestLoad {
-            path: self.path.to_path_buf(),
-            source,
-        })
+        let manifest: ManifestFile =
+            toml::from_str(&content).map_err(|source| AcorusError::ManifestLoad {
+                path: self.path.to_path_buf(),
+                source,
+            })?;
+
+        if manifest.version != ManifestFile::CURRENT_VERSION {
+            return Err(AcorusError::ManifestVersion {
+                path: self.path.to_path_buf(),
+                expected: ManifestFile::CURRENT_VERSION,
+                found: manifest.version,
+            });
+        }
+
+        Ok(manifest)
     }
 }
 
@@ -227,6 +239,20 @@ impl<'a, W: Write> ManifestWriter<'a, W> {
     }
 }
 
+fn normalize_manifest_table_file(raw: &str) -> String {
+    Path::new(raw)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(raw)
+        .to_string()
+}
+
+fn table_file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -256,7 +282,7 @@ mod tests {
         let manifest = Manifest::load_or_create(&manifest_path)?;
 
         assert_eq!(manifest.version(), 1);
-        assert!(manifest.current_sstables().is_empty());
+        assert!(manifest.current_table_files().is_empty());
         assert!(manifest_path.exists());
 
         fs::remove_dir_all(root_dir)?;
@@ -291,7 +317,7 @@ mod tests {
             &manifest_path,
             r#"
 version = 1
-current_sstables = "not-an-array"
+current_table_files = "not-an-array"
 "#,
         )?;
 
@@ -316,9 +342,67 @@ current_sstables = "not-an-array"
         manifest.save_atomically()?;
 
         let loaded = Manifest::load_or_create(&manifest_path)?;
+        let content = fs::read_to_string(&manifest_path)?;
 
         assert_eq!(loaded.version(), manifest.version());
-        assert_eq!(loaded.current_sstables(), manifest.current_sstables());
+        assert_eq!(loaded.current_table_files(), manifest.current_table_files());
+        assert_eq!(
+            loaded.current_table_files(),
+            &["data-000001.sst".to_string(), "data-000002.sst".to_string()]
+        );
+        assert!(content.contains("current_table_files"));
+        assert!(!content.contains(&root_dir.display().to_string()));
+
+        fs::remove_dir_all(root_dir)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_normalizes_legacy_current_sstables_paths() -> AcorusResult<()> {
+        let root_dir = unique_test_dir("manifest");
+        let manifest_path = root_dir.join("manifest.toml");
+        let legacy_path = root_dir.join("nested/data-000001.sst");
+        fs::create_dir_all(&root_dir)?;
+
+        fs::write(
+            &manifest_path,
+            format!(
+                "version = 1\ncurrent_sstables = [\"{}\"]\n",
+                legacy_path.display()
+            ),
+        )?;
+
+        let manifest = Manifest::load_or_create(&manifest_path)?;
+
+        assert_eq!(
+            manifest.current_table_files(),
+            &["data-000001.sst".to_string()]
+        );
+
+        fs::remove_dir_all(root_dir)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_rejects_unsupported_manifest_version() -> AcorusResult<()> {
+        let root_dir = unique_test_dir("manifest");
+        let manifest_path = root_dir.join("manifest.toml");
+        fs::create_dir_all(&root_dir)?;
+
+        fs::write(&manifest_path, "version = 2\ncurrent_table_files = []\n")?;
+
+        let err = Manifest::load_or_create(&manifest_path)
+            .expect_err("expected unsupported manifest version to fail load");
+        assert!(matches!(
+            err,
+            AcorusError::ManifestVersion {
+                expected: 1,
+                found: 2,
+                ..
+            }
+        ));
 
         fs::remove_dir_all(root_dir)?;
 
