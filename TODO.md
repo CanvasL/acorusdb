@@ -56,10 +56,10 @@
 - [x] 第一版只做手动触发或阈值触发，不做后台线程调度。
 - [x] 支持把新旧 SSTable merge 成一个新表。
 - [x] 在 merge 结果里只保留每个 key 的最新版本。
-- [ ] 在安全条件下清理无效 tombstone。
-- [ ] 补测试覆盖：
+- [x] 在安全条件下清理无效 tombstone。
+- [x] 补测试覆盖：
   - [x] 多表里重复 key 的覆盖关系
-  - [ ] tombstone compact 后重启仍然生效
+  - [x] tombstone compact 后重启仍然生效
   - [x] compact 后只保留最新值
 
 ## 第六阶段：元数据与恢复
@@ -69,28 +69,33 @@
   - [x] 先加载 manifest / 表列表
   - [x] 再通过 WAL 回放恢复 memtable
 - [x] 保证新 SSTable 创建和 WAL reset 过程具备 crash safety。
-- [ ] 补恢复相关测试：
+- [x] 补恢复相关测试：
   - [x] manifest 列表驱动的 SSTable 加载测试
   - [x] orphan SSTable 不参与恢复测试
   - [x] SSTable 损坏定位测试
   - [x] manifest 文件损坏时的恢复 / 报错测试
 
-## 第七阶段：可选性能工作
+## 第七阶段：读路径优化
 
-- [ ] 给 SSTable 增加 sparse index。
-- [ ] 只有当读放大真的开始明显时，再加 Bloom filter。
-- [ ] 只有当磁盘格式稳定后，再考虑 block-based read。
-- [ ] 增加 benchmark，测写入吞吐、重启耗时和点查性能。
-
-## 当前不打算做的事
-
-- [ ] 先不要做 leveled compaction。
-- [ ] 先不要做后台 compaction 线程。
-- [ ] 先不要为了 LSM 工作去实现 Redis 兼容 RESP。
-- [ ] 先不要在基础 SSTable 正确性完成前就加 Bloom filter。
-
-## 建议的下一步
-
-- [ ] 补 compact 后 tombstone 仍然生效的测试。
-- [ ] 在确认不会影响可见性的前提下，清理无效 tombstone。
 - [ ] 给 SSTable 增加 sparse index，降低点查时整表加载的成本。
+- [ ] 把当前点查从“整表加载”逐步改成“基于 index 的定点读取”。
+- [ ] 补测试覆盖 index 构建、seek 查找和读路径不回退。
+
+## 第八阶段：磁盘格式加固
+
+- [ ] 给 SSTable 增加 checksum，提升磁盘数据损坏检测能力。
+- [ ] 如果要继续扩展磁盘格式，先明确 version bump 策略。
+- [ ] 只有当磁盘格式稳定后，再考虑 block-based read。
+- [ ] 补损坏场景测试，覆盖 checksum 不匹配、截断和非法块边界。
+
+## 第九阶段：性能测量与按需优化
+
+- [ ] 增加 benchmark，测点查性能、写入吞吐、flush/compact 开销和重启耗时。
+- [ ] 只有当读放大真的开始明显时，再加 Bloom filter。
+- [ ] 根据 benchmark 结果再决定是否要继续做更多读路径缓存或批量读取优化。
+
+## 第十阶段：Compaction V2 与后台调度
+
+- [ ] 评估是否要把 full merge compaction 继续演进成 leveled compaction 或 tiered compaction。
+- [ ] 评估是否要做后台 compaction 线程，避免前台写请求直接承担全部 merge 成本。
+- [ ] 如果引入后台 compaction，补并发、恢复和优雅停机相关测试。

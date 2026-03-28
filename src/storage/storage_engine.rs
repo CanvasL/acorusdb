@@ -212,6 +212,10 @@ impl StorageEngine {
             }
         }
 
+        // This compaction merges all currently active SSTables, so any surviving tombstone no
+        // longer needs to mask data in an older active table and can be dropped safely.
+        merged_memtable.retain(|_, value| matches!(value, MemValue::Value(_)));
+
         let merged_sstable = SSTable::open(&self.next_sstable_path())?;
         merged_sstable.write_from_memtable(&merged_memtable)?;
         self.next_sstable_id += 1;
@@ -552,6 +556,32 @@ mod tests {
 
         let engine = open_engine(&paths, usize::MAX)?;
         assert_eq!(engine.get("name")?, Some("acorus".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_drops_obsolete_tombstones_without_reviving_deleted_values() -> AcorusResult<()> {
+        let paths = TestPaths::new()?;
+
+        {
+            let mut engine = open_engine_with_compaction(&paths, 0, 0)?;
+            engine.set("name", "fan")?;
+            assert!(engine.delete("name")?);
+        }
+
+        assert_eq!(paths.sstable_files()?.len(), 1);
+
+        let compacted_path = paths
+            .sstable_files()?
+            .into_iter()
+            .next()
+            .expect("expected compacted sstable");
+        let compacted = SSTable::open(compacted_path.as_path())?;
+        assert!(!compacted.load_to_memtable()?.contains_key("name"));
+
+        let engine = open_engine(&paths, usize::MAX)?;
+        assert_eq!(engine.get("name")?, None);
 
         Ok(())
     }

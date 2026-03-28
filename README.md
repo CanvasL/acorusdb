@@ -321,7 +321,7 @@ successful flush
 7. WAL 中的 `Delete` 在恢复时会重建成 tombstone，而不是直接把 key 从内存表里移除。
 8. 当前 SSTable 也会持久化 tombstone，保证 flush 和重启后删除语义不丢失。
 9. 当前 flush 不会主动清理 tombstone，它只是把当前 `memtable` 状态落盘并清空 WAL。
-10. 当前 compaction 仍然会保留 tombstone，保证删除语义不退化；后续可以在更严格的安全条件下再清理“已经不再需要遮蔽旧值”的 tombstone。
+10. 当前 full merge compaction 会在合并全部活跃 SSTable 后清理已经失效的 tombstone，避免删除标记无限堆积。
 
 ## 错误处理
 
@@ -370,6 +370,7 @@ cargo test
 - flush 后恢复
 - flush 后 tombstone 保留
 - auto-compaction 阈值触发与最新值保留
+- full compaction 后 tombstone 清理且删除语义不回退
 - `sstable + wal` 叠加恢复
 - 多 SSTable 启动恢复和覆盖顺序
 - manifest 驱动恢复、orphan SSTable 忽略和损坏 manifest 报错
@@ -386,7 +387,6 @@ cargo test
 - 当前 SSTable 还没有 sparse index、checksum 和 block 结构
 - 当前单表点查还是朴素实现，会直接加载整张表
 - 当前 compaction 还是 full merge compaction，还没有 leveled 策略
-- 当前 compaction 还没有清理无效 tombstone
 - 当前还没有后台 compaction、Bloom filter 和 benchmark
 - 当前存储结构还不是完整的 LSM Tree
 
@@ -396,6 +396,6 @@ cargo test
 
 核心方向是把当前存储引擎逐步演进成一个 mini-LSM：
 
-- 先把当前 full merge compaction 补齐 tombstone 清理和测试覆盖
+- 先把当前 full merge compaction 继续补强测试覆盖
 - 然后给 SSTable 增加 sparse index，降低点查的整表读取成本
 - 最后再逐步补 Bloom filter、benchmark 和更进一步的 compaction 策略
